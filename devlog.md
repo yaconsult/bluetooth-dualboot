@@ -239,7 +239,65 @@ Classic key already in sync — nothing to do.
 ```
 Idempotent — re-running detects no changes needed. ✅
 
+### Remaining (from Session 4)
+
+- [x] Boot into Windows — mouse did NOT connect (see Session 5)
+- [x] Push to GitHub
+
+---
+
+## Session 5 — 2026-05-20 (continued)
+
+### Problem
+
+Mouse did not connect after booting Windows. A second identical mouse entry briefly
+appeared and disappeared in the Windows Bluetooth devices list.
+
+### Root Cause
+
+The mouse uses **Resolvable Private Addresses (RPA)**. When Windows previously paired
+the mouse, it was advertising under the RPA `D8:B8:C3:8E:9F:D6` — so Windows stored
+its registry entry under the key `d8b8c38e9fd6`. Linux paired the same mouse using
+its **identity (static) address** `E4:9F:64:0B:E8:1C` and stored the key under `e49f640be81c`.
+
+Our MAC-based matching failed to link these two entries, so `bt-sync` created a brand
+new entry `e49f640be81c` with no device metadata (no Name, LEName, Appearance, etc.).
+Windows saw two competing entries for the same device — the "ghost" second mouse.
+
+The fix: **match on IRK first**. The IRK (Identity Resolving Key) is the stable
+cryptographic identity of a BLE device regardless of what address it's currently
+advertising. Both entries had the same IRK — that's the correct matching signal.
+
+### Changes
+
+- `_find_ble_win_entry()` in `sync.py` — match on IRK first (byte-reversed to Windows
+  format), fall back to MAC match for public-address devices
+- Fixed `find_subkey()` → `subkey()` — wrong `python-registry` API method name
+  (this was a latent bug that only surfaced once the IRK match triggered a patch
+  on the existing `d8b8c38e9fd6` entry for the first time)
+
+### Result
+
+`bt-sync` now correctly identifies `d8b8c38e9fd6` as the mouse and patches it
+in-place — only the CSRKs needed updating (LTK/IRK were already correct from the
+prior Windows pairing):
+
+```
+[BLE] BT5.0 Mouse (E4:9F:64:0B:E8:1C)
+  Windows entry: found in Windows  (matched via IRK to d8b8c38e9fd6)
+  Action: PATCH existing Windows BLE entry
+  CSRK(inbound):  0FFC3A6F744E1B7D60EAC23AF1A72742 → 967A67871FEF0885DD14ED51D11BBD8F
+  CSRK(outbound): 7D7A7896F42A90B5FE5A3BBB984DEAFE → 1CAB2D816B402F56D2F9AF680AABF98C
+```
+
+### Note on RPA vs identity address
+
+For BLE devices with RPA:
+- Windows stores the entry under whatever address the device was using when paired
+- Linux stores the entry under the identity (static/public) address
+- These MACs will differ — IRK is the only reliable cross-OS match key
+- Classic BR/EDR devices always use a fixed public address — MAC matching is correct
+
 ### Remaining
 
-- [ ] Boot into Windows — confirm BT5.0 Mouse connects without re-pairing
-- [ ] Push to GitHub
+- [ ] Boot into Windows — confirm mouse connects without re-pairing

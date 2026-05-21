@@ -122,10 +122,21 @@ Linux (BlueZ) and Windows store BLE keys with **opposite byte order**
 
 1. Reads `LTK`, `IRK`, and `CSRK` from `/var/lib/bluetooth/<adapter>/<device>/info`
 2. Byte-reverses each key to Windows format
-3. If the device already exists in the Windows registry → patches the existing entry in-place
-4. If the device has never been paired in Windows → creates a new registry subkey via `reged`
+3. Matches the Linux device to its Windows registry entry **by IRK** (not MAC address)
+4. If a match is found → patches the existing entry in-place
+5. If no match → creates a new registry subkey via `reged`
 
 `AuthReq` (pairing security flags) is derived from the Linux pairing data — not hardcoded.
+
+#### Why IRK matching, not MAC?
+
+Many BLE devices use **Resolvable Private Addresses (RPA)** — the MAC address they
+advertise changes every ~15 minutes. Windows pairs the device under whatever RPA it
+saw at pairing time. Linux pairs it under the stable **identity address** (via the IRK).
+These two MACs are different, so MAC-based matching would fail to link them.
+
+The IRK (Identity Resolving Key) is the same on both sides and is the correct stable
+identifier. The tool byte-reverses the Linux IRK to Windows format before comparing.
 
 ### Classic BR/EDR devices (older mice, some headsets)
 
