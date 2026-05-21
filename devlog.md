@@ -298,6 +298,51 @@ For BLE devices with RPA:
 - These MACs will differ — IRK is the only reliable cross-OS match key
 - Classic BR/EDR devices always use a fixed public address — MAC matching is correct
 
+### Remaining (from Session 5)
+
+- [x] Boot into Windows — mouse still not connecting (see Session 6)
+
+---
+
+## Session 6 — 2026-05-20 (continued)
+
+### Problem
+
+Mouse still showed as "not connected" in Windows after Session 5 fix.
+
+### Root Cause
+
+The Windows registry entry `d8b8c38e9fd6` had `AddressType=0x0` (public address).
+The mouse's actual address type is `static random` (`AddressType=0x1`). This mismatch
+means Windows attempts to connect using the wrong address resolution mode, preventing
+the connection from succeeding even though the cryptographic keys are correct.
+
+The `d8b8c38e9fd6` entry was originally created by Windows when the mouse was advertising
+via an RPA — Windows recorded `AddressType=0` at that time, but the correct value based
+on the device's identity is `1` (static random), which is what Linux correctly stores.
+
+### Changes
+
+- `patch_ble_entry()` in `windows_bt.py` — added `address_type` parameter; patches
+  `AddressType` DWORD via `reged` (safe, since raw binary search for small int values
+  like 0x00000000 is unreliable in a large hive)
+- `_sync_ble()` in `sync.py` — detects `AddressType` mismatch and passes corrected
+  value to `patch_ble_entry()`; logs the change in verbose output
+
+### Result
+
+```
+[BLE] BT5.0 Mouse (E4:9F:64:0B:E8:1C)
+  Windows entry: found in Windows
+  Action: PATCH existing Windows BLE entry
+  CSRK(inbound):  0FFC... → 967A...
+  CSRK(outbound): 7D7A... → 1CAB...
+  AddressType: 0 → 1                    ← new fix
+```
+
+Registry verified:
+  'AddressType': 0x1  ✅
+
 ### Remaining
 
 - [ ] Boot into Windows — confirm mouse connects without re-pairing

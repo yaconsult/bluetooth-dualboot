@@ -186,11 +186,14 @@ def _sync_ble(
         return True
 
     # Entry exists — check if update is needed
+    linux_address_type = 0 if lk.address_type == "public" else 1
+    address_type_changed = linux_address_type != we.address_type
     needs_update = (
         (new_ltk and new_ltk != we.ltk)
         or (new_irk and new_irk != we.irk)
         or (new_csrk_inbound and we.csrk_inbound and new_csrk_inbound != we.csrk_inbound)
         or (new_csrk_outbound and we.csrk_outbound and new_csrk_outbound != we.csrk_outbound)
+        or address_type_changed
     )
 
     if not needs_update:
@@ -213,6 +216,8 @@ def _sync_ble(
                 f"    CSRK(outbound): {we.csrk_outbound.hex().upper()} → "
                 f"{new_csrk_outbound.hex().upper()}"
             )
+        if address_type_changed:
+            print(f"    AddressType: {we.address_type} → {linux_address_type}")
 
     if dry_run:
         print(f"  [{lk.device_name}] DRY RUN — would patch existing Windows BLE entry.")
@@ -226,6 +231,7 @@ def _sync_ble(
         irk=new_irk if new_irk else we.irk,
         csrk_inbound=new_csrk_inbound,
         csrk_outbound=new_csrk_outbound,
+        address_type=linux_address_type if address_type_changed else None,
     )
     print(f"  [{lk.device_name}] BLE keys patched in Windows registry.")
     return True

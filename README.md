@@ -138,6 +138,11 @@ These two MACs are different, so MAC-based matching would fail to link them.
 The IRK (Identity Resolving Key) is the same on both sides and is the correct stable
 identifier. The tool byte-reverses the Linux IRK to Windows format before comparing.
 
+When an existing Windows entry is matched via IRK, the tool also corrects `AddressType`
+if it differs — Windows may have recorded the wrong address type (e.g. `0` = public)
+when it first paired the device via an RPA. The correct value (`1` = static random) is
+taken from Linux's pairing data.
+
 ### Classic BR/EDR devices (older mice, some headsets)
 
 Link keys do **not** need byte-reversal. The tool patches or creates the value directly
