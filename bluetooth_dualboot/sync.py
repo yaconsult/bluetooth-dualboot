@@ -201,12 +201,16 @@ def _sync_ble(
     # Entry exists — check if update is needed
     linux_address_type = 0 if lk.address_type == "public" else 1
     address_type_changed = linux_address_type != we.address_type
+    ediv_changed = lk.ltk_ediv != we.ediv
+    erand_changed = lk.ltk_rand != we.erand
     needs_update = (
         (new_ltk and new_ltk != we.ltk)
         or (new_irk and new_irk != we.irk)
         or (new_csrk_inbound and we.csrk_inbound and new_csrk_inbound != we.csrk_inbound)
         or (new_csrk_outbound and we.csrk_outbound and new_csrk_outbound != we.csrk_outbound)
         or address_type_changed
+        or ediv_changed
+        or erand_changed
     )
 
     if not needs_update:
@@ -231,6 +235,10 @@ def _sync_ble(
             )
         if address_type_changed:
             print(f"    AddressType: {we.address_type} → {linux_address_type}")
+        if ediv_changed:
+            print(f"    EDIV: {hex(we.ediv)} → {hex(lk.ltk_ediv)}")
+        if erand_changed:
+            print(f"    ERand: {hex(we.erand)} → {hex(lk.ltk_rand)}")
 
     if dry_run:
         print(f"  [{lk.device_name}] DRY RUN — would patch existing Windows BLE entry.")
@@ -245,6 +253,8 @@ def _sync_ble(
         csrk_inbound=new_csrk_inbound,
         csrk_outbound=new_csrk_outbound,
         address_type=linux_address_type if address_type_changed else None,
+        ediv=lk.ltk_ediv if ediv_changed else None,
+        erand=lk.ltk_rand if erand_changed else None,
     )
     print(f"  [{lk.device_name}] BLE keys patched in Windows registry.")
     return True

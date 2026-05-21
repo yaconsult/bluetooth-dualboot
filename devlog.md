@@ -434,7 +434,31 @@ CSRK(inbound):  E573A5E3... → D56A9161...
 CSRK(outbound): ACFE2E0B... → ABBCE779...
 ```
 
+### EDIV/ERand Missing from Patch (Second Fix)
+
+After the active-entry fix, Windows still showed "not connected". Inspection revealed
+`EDIV` and `ERand` in `f6a2f5ec714b` still had Windows' original values:
+
+| Field | Windows (wrong) | Linux (correct) |
+|-------|----------------|-----------------|
+| EDIV  | `0xa645`       | `0x1aa1`        |
+| ERand | `0x184589eddadcff4` | `0x49716aaeaa1f1429` |
+
+`patch_ble_entry` was only patching LTK, IRK, and CSRKs — not EDIV/ERand. Windows
+uses all of these together for session key derivation; mismatched EDIV/ERand causes
+the connection to fail cryptographically even with a correct LTK.
+
+**Fix:** Added `ediv` and `erand` params to `patch_ble_entry`; patched via `reged`
+(DWORD and QWORD respectively — unsafe to patch as raw binary). `_sync_ble` now
+detects and reports EDIV/ERand mismatches and passes them through.
+
+**Live sync output:**
+```
+EDIV: 0xa645 → 0x1aa1
+ERand: 0x184589eddadcff4 → 0x49716aaeaa1f1429
+[BT5.0 Mouse] BLE keys patched in Windows registry.
+```
+
 ### Remaining
 
-- [ ] Run `sudo uv run bt-sync` live to patch active Windows entry
 - [ ] Boot Windows — confirm mouse connects automatically without re-pairing

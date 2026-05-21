@@ -161,11 +161,15 @@ def patch_ble_entry(
     csrk_inbound: bytes | None = None,
     csrk_outbound: bytes | None = None,
     address_type: int | None = None,
+    ediv: int | None = None,
+    erand: int | None = None,
 ) -> None:
-    """Overwrite LTK, IRK, AddressType and optionally CSRK values in an existing BLE entry.
+    """Overwrite LTK, IRK, AddressType, EDIV, ERand and optionally CSRK values in an existing
+    BLE entry.
 
-    Uses raw binary patching since python-registry is read-only.
-    Values are located by their current byte content and replaced in-place.
+    Uses raw binary patching for 16-byte keys (LTK, IRK, CSRK) since python-registry
+    is read-only. Uses reged for integer DWORD/QWORD values (AddressType, EDIV, ERand)
+    since raw binary search is unsafe for small integer values.
     Requires the hive file to be writable (sudo).
     """
     hive_bytes = bytearray(hive_path.read_bytes())
@@ -208,16 +212,21 @@ def patch_ble_entry(
 
     hive_path.write_bytes(bytes(hive_bytes))
 
-    # Patch DWORD values via reged (raw binary search is unsafe for small integers)
+    # Patch integer values via reged (raw binary search is unsafe for small integers)
     at_changed = address_type is not None and current.get("AddressType") != address_type
-    if at_changed:
+    ediv_changed = ediv is not None and current.get("EDIV") != ediv
+    erand_changed = erand is not None and current.get("ERand") != erand
+    if at_changed or ediv_changed or erand_changed:
         reg_key_path = f"HKEY_LOCAL_MACHINE\\SYSTEM\\{_BT_KEY_PATH}\\{adapter_key}\\{device_key}"
-        reg_content = (
-            "Windows Registry Editor Version 5.00\n\n"
-            f"[{reg_key_path}]\n"
-            f'"AddressType"=dword:{address_type:08x}\n'
-        )
-        _run_reged_import(hive_path, reg_content)
+        lines = ["Windows Registry Editor Version 5.00", "", f"[{reg_key_path}]"]
+        if at_changed:
+            lines.append(f'"AddressType"=dword:{address_type:08x}')
+        if ediv_changed:
+            lines.append(f'"EDIV"=dword:{ediv:08x}')
+        if erand_changed:
+            lines.append(f'"ERand"={_qword_to_reg_hex(erand)}')
+        lines.append("")
+        _run_reged_import(hive_path, "\n".join(lines))
 
 
 def patch_classic_entry(
