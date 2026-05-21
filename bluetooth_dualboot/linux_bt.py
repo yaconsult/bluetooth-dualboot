@@ -40,6 +40,23 @@ class BLEKeys:
     extra: dict = field(default_factory=dict)
 
 
+@dataclass
+class ClassicKeys:
+    """BR/EDR (Classic Bluetooth) pairing keys for a single device as stored by BlueZ."""
+
+    device_mac: str
+    adapter_mac: str
+    device_name: str
+
+    link_key: str = ""
+    link_key_type: int = 4
+    pin_length: int = 0
+
+
+# Union type for any paired device
+AnyDeviceKeys = BLEKeys | ClassicKeys
+
+
 def _read_info_file(path: Path) -> configparser.ConfigParser:
     """Parse a BlueZ device info file (INI-style)."""
     parser = configparser.ConfigParser()
@@ -96,32 +113,66 @@ def read_ble_keys(info_path: Path, adapter_mac: str, device_mac: str) -> BLEKeys
     return keys
 
 
+def read_classic_keys(info_path: Path, adapter_mac: str, device_mac: str) -> ClassicKeys | None:
+    """Parse a BlueZ info file and return ClassicKeys if it is a BR/EDR device, else None."""
+    parser = _read_info_file(info_path)
+
+    general = parser["General"] if "General" in parser else {}
+    technologies = general.get("SupportedTechnologies", "")
+
+    if "BR/EDR" not in technologies:
+        return None
+
+    keys = ClassicKeys(
+        device_mac=device_mac,
+        adapter_mac=adapter_mac,
+        device_name=general.get("Name", "Unknown"),
+    )
+
+    if "LinkKey" in parser:
+        lk = parser["LinkKey"]
+        keys.link_key = lk.get("Key", "")
+        keys.link_key_type = int(lk.get("Type", 4))
+        keys.pin_length = int(lk.get("PINLength", 0))
+
+    return keys
+
+
+def _is_mac_dir(name: str) -> bool:
+    """Return True if a directory name looks like a Bluetooth MAC address."""
+    return len(name.replace(":", "").replace("-", "")) == 12
+
+
 def discover_ble_devices(bluez_base: Path = BLUEZ_BASE) -> list[BLEKeys]:
     """Walk the BlueZ key store and return BLEKeys for every BLE-capable device."""
-    devices: list[BLEKeys] = []
+    return [d for d in discover_all_devices(bluez_base) if isinstance(d, BLEKeys)]
+
+
+def discover_all_devices(bluez_base: Path = BLUEZ_BASE) -> list[AnyDeviceKeys]:
+    """Walk the BlueZ key store and return keys for ALL paired devices (BLE and Classic)."""
+    devices: list[AnyDeviceKeys] = []
 
     if not bluez_base.exists():
         raise FileNotFoundError(f"BlueZ directory not found: {bluez_base}")
 
-    for adapter_dir in bluez_base.iterdir():
-        if not adapter_dir.is_dir():
+    for adapter_dir in sorted(bluez_base.iterdir()):
+        if not adapter_dir.is_dir() or not _is_mac_dir(adapter_dir.name):
             continue
         adapter_mac = adapter_dir.name
-        if len(adapter_mac.replace(":", "")) != 12:
-            continue  # skip non-MAC dirs like 'mesh'
 
-        for device_dir in adapter_dir.iterdir():
-            if not device_dir.is_dir():
+        for device_dir in sorted(adapter_dir.iterdir()):
+            if not device_dir.is_dir() or not _is_mac_dir(device_dir.name):
                 continue
             device_mac = device_dir.name
-            if len(device_mac.replace(":", "")) != 12:
-                continue
 
             info_file = device_dir / "info"
             if not info_file.exists():
                 continue
 
-            keys = read_ble_keys(info_file, adapter_mac, device_mac)
+            # Try BLE first, then Classic
+            keys: AnyDeviceKeys | None = read_ble_keys(info_file, adapter_mac, device_mac)
+            if keys is None:
+                keys = read_classic_keys(info_file, adapter_mac, device_mac)
             if keys is not None:
                 devices.append(keys)
 

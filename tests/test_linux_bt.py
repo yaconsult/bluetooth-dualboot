@@ -4,7 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from bluetooth_dualboot.linux_bt import discover_ble_devices, read_ble_keys
+from bluetooth_dualboot.linux_bt import (
+    BLEKeys,
+    ClassicKeys,
+    discover_all_devices,
+    discover_ble_devices,
+    read_ble_keys,
+    read_classic_keys,
+)
 
 BLE_INFO = """\
 [General]
@@ -102,3 +109,45 @@ def test_discover_ble_devices(tmp_path):
 def test_discover_ble_devices_missing_dir():
     with pytest.raises(FileNotFoundError):
         discover_ble_devices(Path("/nonexistent/path"))
+
+
+def test_read_classic_keys(tmp_path):
+    info = _write_info(tmp_path, CLASSIC_INFO)
+    keys = read_classic_keys(info, "C0:35:32:AC:13:4A", "DF:D6:4F:C9:DC:97")
+    assert keys is not None
+    assert isinstance(keys, ClassicKeys)
+    assert keys.device_name == "Baseus BA01"
+    assert keys.link_key == "AF34A492D9CA9CA11330C4FC4D8475E3"
+    assert keys.link_key_type == 4
+    assert keys.pin_length == 0
+
+
+def test_read_classic_keys_ble_returns_none(tmp_path):
+    info = _write_info(tmp_path, BLE_INFO)
+    keys = read_classic_keys(info, "C0:35:32:AC:13:4A", "E4:9F:64:0B:E8:1C")
+    assert keys is None
+
+
+def test_discover_all_devices(tmp_path):
+    adapter_dir = tmp_path / "C0:35:32:AC:13:4A"
+    ble_device_dir = adapter_dir / "E4:9F:64:0B:E8:1C"
+    classic_device_dir = adapter_dir / "DF:D6:4F:C9:DC:97"
+    ble_device_dir.mkdir(parents=True)
+    classic_device_dir.mkdir(parents=True)
+    (ble_device_dir / "info").write_text(BLE_INFO)
+    (classic_device_dir / "info").write_text(CLASSIC_INFO)
+    (tmp_path / "mesh").mkdir()  # should be ignored
+
+    devices = discover_all_devices(tmp_path)
+    assert len(devices) == 2
+    ble = [d for d in devices if isinstance(d, BLEKeys)]
+    classic = [d for d in devices if isinstance(d, ClassicKeys)]
+    assert len(ble) == 1
+    assert len(classic) == 1
+    assert ble[0].device_name == "BT5.0 Mouse"
+    assert classic[0].device_name == "Baseus BA01"
+
+
+def test_discover_all_devices_missing_dir():
+    with pytest.raises(FileNotFoundError):
+        discover_all_devices(Path("/nonexistent/path"))

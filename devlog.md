@@ -129,8 +129,38 @@ tests/
 
 12/12 tests passing. ruff + black clean.
 
+### Next Steps (from Session 2)
+
+- [x] Run dry-run to verify — pending (see Session 3)
+- [x] Generalize to all device types
+
+---
+
+## Session 3 — 2026-05-20 (continued)
+
+### Changes
+
+- **Syncs all paired devices**, not just the mouse — BLE and Classic BR/EDR
+- **Handles devices not yet paired in Windows** — creates new registry entries via `reged -I`
+  (imports a generated `.reg` file into the hive)
+- **Existing entries** — patched in-place as before (binary patch)
+- Added `ClassicKeys` dataclass and `read_classic_keys()` to `linux_bt.py`
+- Added `discover_all_devices()` — returns both BLE and Classic devices
+- Added `WindowsClassicEntry`, `read_windows_classic_entries()`, `patch_classic_entry()`,
+  `create_classic_entry()`, `create_ble_entry()` to `windows_bt.py`
+- Renamed `write_ble_keys_to_hive()` → `patch_ble_entry()` for clarity
+- `sync.py` fully rewritten to handle both types with create/patch branching
+
+### Note on Classic BR/EDR byte order
+Classic BT link keys do NOT need byte-reversal between Linux and Windows
+(unlike BLE LTK/IRK). Stored as-is.
+
+### Test Results
+
+16/16 tests passing. ruff + black clean.
+
 ### Next Steps
 
-- [ ] Run `bt-sync --dry-run` to verify detection and key computation against live system
-- [ ] Run `bt-sync` (write mode) and test mouse in Windows
+- [ ] Run `sudo uv run bt-sync --dry-run --verbose` to verify live system detection
+- [ ] Run `sudo uv run bt-sync` and test mouse in Windows
 - [ ] Push to GitHub once verified working
