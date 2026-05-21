@@ -1,29 +1,162 @@
 # bluetooth-dualboot
 
-Sync Bluetooth mouse pairing keys between Fedora Linux and Windows 11 for seamless dual-boot usage — no re-pairing required when switching OS.
+Sync Bluetooth pairing keys from Linux into the Windows registry so every paired
+Bluetooth device (mice, keyboards, headphones, etc.) works in **both Fedora Linux
+and Windows 11** without re-pairing when you switch OS from GRUB.
 
-## Problem
+Supports **BLE (Bluetooth Low Energy)** and **Classic BR/EDR** devices.
 
-When a Bluetooth mouse is paired independently in two OSes, each OS generates different cryptographic keys and overwrites the mouse's stored keys, breaking the other OS's connection.
+---
 
-## Solution
+## The Problem
 
-Pair the mouse in both OSes once, then use this tool to inject the Linux BLE keys into the Windows registry so both OSes share the same key set.
+When you pair a Bluetooth device in Linux, Linux generates and stores cryptographic
+keys. When you pair the same device in Windows, Windows generates *different* keys
+and overwrites the device's stored keys — breaking Linux's connection (and vice versa).
+
+Every re-pair breaks the other OS.
+
+## The Solution
+
+Pair each device **once in Linux**. This tool reads Linux's pairing keys and injects
+them into the Windows registry (while the Windows partition is mounted but not booted).
+Both OSes then share the same keys, so every device connects automatically regardless
+of which OS you boot.
+
+---
+
+## Requirements
+
+- Dual-boot system: **Fedora Linux** (or any distro with BlueZ) + **Windows 11**
+- Windows NTFS partition mounted in Linux (e.g. at `/mnt/windows`)
+- `sudo` access
+- `reged` (part of the `chntpw` package) — for creating new registry entries
+- `python3` + [`uv`](https://github.com/astral-sh/uv) — for running the tool
+
+### Install system dependencies
+
+**Fedora / RHEL:**
+```bash
+sudo dnf install chntpw
+```
+
+**Debian / Ubuntu:**
+```bash
+sudo apt install chntpw
+```
+
+**Arch:**
+```bash
+sudo pacman -S chntpw
+```
+
+---
 
 ## Setup
 
 ```bash
-uv sync --group dev
+git clone https://github.com/yaconsult/bluetooth-dualboot.git
+cd bluetooth-dualboot
+uv sync
 ```
+
+This creates an isolated `.venv/` inside the project folder — no system Python packages
+are modified.
+
+---
 
 ## Usage
 
+### 1. Pair all your Bluetooth devices in Linux first
+
+Make sure every device you want to use in both OSes is paired and working in Linux.
+
+### 2. Mount the Windows partition (if not auto-mounted)
+
 ```bash
-uv run bt-sync
+sudo mkdir -p /mnt/windows
+sudo mount /dev/nvme0n1p3 /mnt/windows   # adjust partition as needed
 ```
 
-## Requirements
+### 3. Run a dry-run to preview changes
 
-- Fedora Linux with `sudo`
-- Windows partition mounted (e.g. `/mnt/windows-drive`)
-- Mouse paired in both OSes at least once
+```bash
+sudo uv run bt-sync --dry-run --verbose
+```
+
+### 4. Apply the sync
+
+```bash
+sudo uv run bt-sync
+```
+
+### 5. Boot into Windows
+
+Your Bluetooth devices should connect automatically. No re-pairing needed.
+
+---
+
+## CLI Reference
+
+```
+sudo uv run bt-sync [OPTIONS]
+
+Options:
+  --windows-mount PATH   Mount point of the Windows NTFS partition
+                         (auto-detected from mounted NTFS volumes if omitted)
+  --bluez-dir PATH       Path to the BlueZ key store
+                         (default: /var/lib/bluetooth)
+  --dry-run              Show what would be changed without writing anything
+  --verbose              Print detailed key values and actions
+  -h, --help             Show this message and exit
+```
+
+---
+
+## How It Works
+
+### BLE devices (most modern mice, keyboards)
+
+Linux (BlueZ) and Windows store BLE keys with **opposite byte order**
+(big-endian vs little-endian). The tool:
+
+1. Reads `LTK`, `IRK`, and `CSRK` from `/var/lib/bluetooth/<adapter>/<device>/info`
+2. Byte-reverses each key to Windows format
+3. If the device already exists in the Windows registry → patches the existing entry in-place
+4. If the device has never been paired in Windows → creates a new registry subkey via `reged`
+
+`AuthReq` (pairing security flags) is derived from the Linux pairing data — not hardcoded.
+
+### Classic BR/EDR devices (older mice, some headsets)
+
+Link keys do **not** need byte-reversal. The tool patches or creates the value directly
+on the adapter registry key.
+
+### Registry location
+
+```
+HKLM\SYSTEM\ControlSet001\Services\BTHPORT\Parameters\Keys\<adapter>\<device>
+```
+
+---
+
+## Re-running After Re-pairing
+
+If you re-pair a device in Linux (e.g. after a factory reset), just run `bt-sync` again.
+It detects key mismatches and updates Windows automatically.
+
+---
+
+## Supported Distros
+
+Tested on **Fedora 44**. Should work on any Linux distro with BlueZ (`/var/lib/bluetooth`).
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+MIT

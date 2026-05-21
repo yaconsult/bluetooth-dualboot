@@ -39,6 +39,23 @@ class BLEKeys:
     address_type: str = "static"
     extra: dict = field(default_factory=dict)
 
+    @property
+    def auth_req(self) -> int:
+        """Derive Windows AuthReq flags from pairing properties.
+
+        AuthReq is a bitmask (BT spec Vol 3 Part H Section 3.5.1):
+          Bits 0-1: Bonding flags (01 = bonding)
+          Bit  2:   MITM protection (set if ltk_authenticated=1)
+          Bit  3:   Secure Connections (assumed supported on modern devices)
+          Bit  4:   Keypress notification (not used)
+          Bit  5:   CT2 (Cross-Transport Key Derivation, assumed supported)
+        """
+        bonding = 0b01  # always bonding
+        mitm = (1 << 2) if self.ltk_authenticated else 0
+        secure_connections = 1 << 3
+        ct2 = 1 << 5
+        return bonding | mitm | secure_connections | ct2
+
 
 @dataclass
 class ClassicKeys:

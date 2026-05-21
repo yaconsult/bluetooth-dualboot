@@ -163,6 +163,7 @@ def _sync_ble(
             ediv=lk.ltk_ediv,
             address=address,
             address_type=address_type,
+            auth_req=lk.auth_req,
             csrk_inbound=new_csrk_inbound,
             csrk_outbound=new_csrk_outbound,
         )

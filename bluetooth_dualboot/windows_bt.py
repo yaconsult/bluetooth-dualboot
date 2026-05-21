@@ -267,11 +267,14 @@ def create_ble_entry(
     address_type: int,
     csrk_inbound: bytes | None = None,
     csrk_outbound: bytes | None = None,
-    auth_req: int = 45,
+    auth_req: int = 0x29,
 ) -> None:
     """Create a new BLE device subkey in the Windows SYSTEM hive via reged.
 
     Used when the device has never been paired in Windows before.
+
+    auth_req should be derived from the Linux pairing data (BLEKeys.auth_req).
+    The fallback 0x29 = bonding(01) + SC(bit3) + CT2(bit5), no MITM.
     """
     reg_key_path = f"HKEY_LOCAL_MACHINE\\SYSTEM\\{_BT_KEY_PATH}\\{adapter_key}\\{device_key}"
 
@@ -287,8 +290,12 @@ def create_ble_entry(
         f'"Address"={_qword_to_reg_hex(address)}',
         f'"AddressType"=dword:{address_type:08x}',
         f'"AuthReq"=dword:{auth_req:08x}',
+        # OutboundSignCounter: starts at 0 for a new pairing
         f'"OutboundSignCounter"=dword:{0:08x}',
+        # InboundSignCounter: 0xFFFFFFFFFFFFFFFF is the Windows "uninitialized" sentinel
+        # (means: accept any counter value on first inbound signed packet)
         f'"InboundSignCounter"={_qword_to_reg_hex(0xFFFFFFFFFFFFFFFF)}',
+        # CEntralIRKStatus=1: IRK verified/resolved — required for private address resolution
         f'"CEntralIRKStatus"=dword:{1:08x}',
     ]
 
