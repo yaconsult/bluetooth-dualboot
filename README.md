@@ -203,6 +203,46 @@ It detects key mismatches and updates Windows automatically.
 
 ---
 
+## Troubleshooting
+
+### Device shows as "not connected" or "not paired" in Windows after sync
+
+The most reliable fix is to start fresh:
+
+1. In Windows Bluetooth settings, **Remove device**
+2. **Re-pair** the device in Windows (confirm it works)
+3. Boot Linux, **re-pair** the device in Linux
+4. Run `sudo uv run bt-sync`
+5. Boot Windows — the device should connect automatically
+
+### Mouse/keyboard has both BT3.0 and BT5.0 modes
+
+Some devices (e.g. TeckNet EWM01308) advertise as two separate Bluetooth devices —
+one Classic BR/EDR (BT3.0) and one BLE (BT5.0). **Both OSes must pair using the same
+protocol** — `bt-sync` cannot bridge keys between BLE and Classic.
+
+- BLE (BT5.0) is recommended — better battery life, handled natively by `bt-sync`
+- If the device only shows up as Classic during pairing, it may be trying to reconnect
+  to a previous BLE host — remove that pairing first, then retry
+
+To check which protocol Linux paired with:
+```bash
+sudo cat /var/lib/bluetooth/<adapter>/<device>/info | grep -i "SupportedTechnologies\|AddressType"
+```
+If `SupportedTechnologies=LE` → BLE. If `AddressType` is absent and a `LinkKey`
+section is present → Classic.
+
+### Device won't advertise BLE for pairing (keeps reconnecting to old host)
+
+If the device was previously paired to another OS via BLE, it will try to reconnect
+to that host on power-up instead of advertising for new pairings. Fix:
+
+1. On the **old paired OS**, remove/forget the device
+2. Power-cycle the device — it will now advertise freely
+3. Pair on the new OS
+
+---
+
 ## Supported Distros
 
 Tested on **Fedora 44**. Should work on any Linux distro with BlueZ (`/var/lib/bluetooth`).

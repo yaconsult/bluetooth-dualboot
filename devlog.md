@@ -343,6 +343,67 @@ on the device's identity is `1` (static random), which is what Linux correctly s
 Registry verified:
   'AddressType': 0x1  ✅
 
+### Remaining (from Session 6)
+
+- [x] Boot into Windows — mouse still not connecting (see Session 7)
+
+---
+
+## Session 7 — 2026-05-20 (continued)
+
+### Investigation
+
+After AddressType fix still didn't work, inspected event logs and full registry state.
+Windows event log (BTHUSB) entries exist for today's test boots but message text is
+unavailable offline (requires the driver binary's message table).
+
+Full registry inspection revealed:
+- Keys hive: correct — LTK, IRK, CSRKs, AddressType=1 all look good
+- BTHLEDevice enum: 5 service entries all pointing to `d8b8c38e9fd6` ✅
+- BTHLE enum: `FriendlyName='BT5.0 Mouse'` ✅
+
+### New Discovery: Mouse Has Two Protocols
+
+The TeckNet EWM01308 advertises as **two separate Bluetooth devices**:
+- `12:34:00:75:4D:05` — Classic BR/EDR (BT3.0 Mouse)
+- `E4:9F:64:0B:E8:1C` — BLE (BT5.0 Mouse)
+
+Same physical hardware, different radio protocols. The pairing button triggers Classic
+mode advertising. BLE mode is separate.
+
+### What Went Wrong
+
+- Windows had paired the mouse as **BLE** (`d3b4bb9c552e` — a new fresh entry from
+  the most recent re-pair session)
+- Linux accidentally paired it as **Classic** (`12:34:00:75:4D:05`) during the
+  re-pairing attempt
+- The two OSes were using **different protocols** — `bt-sync` cannot bridge BLE↔Classic
+- Additionally, because Windows still held the BLE pairing, the mouse was trying to
+  **reconnect to Windows** on startup rather than advertising for new pairings —
+  making it impossible to pair via BLE in Linux
+
+### Resolution Plan
+
+1. Boot Windows → **remove** BT5.0 Mouse pairing → **re-pair** it (fresh BLE entry)
+2. Boot Linux → mouse now freely advertises BLE → pair `E4:9F:64:0B:E8:1C`
+3. Run `sudo uv run bt-sync` → patches Windows BLE keys to match Linux
+4. Boot Windows → mouse connects automatically
+
+Status: Steps 1 completed (Windows remove + re-pair done). Steps 2-4 pending — will
+test tomorrow.
+
+### Key Learnings
+
+- TeckNet EWM01308 pairing button = Classic mode only; BLE requires power-cycle when
+  no host is remembered
+- Must ensure both OSes pair using the **same protocol** (both BLE or both Classic)
+- The stale `d8b8c38e9fd6` entry (from an older RPA session) should be cleaned up —
+  it's no longer needed now that Windows has a fresh `d3b4bb9c552e` entry
+- `bt-sync` idempotency check and backup-on-write-only are working correctly
+
 ### Remaining
 
-- [ ] Boot into Windows — confirm mouse connects without re-pairing
+- [ ] Boot Linux — pair mouse as BLE (`E4:9F:64:0B:E8:1C`)
+- [ ] Run `sudo uv run bt-sync` to sync keys
+- [ ] Boot Windows — confirm mouse connects automatically without re-pairing
+- [ ] Clean up stale `d8b8c38e9fd6` registry entry if still present after sync
