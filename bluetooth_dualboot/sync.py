@@ -372,6 +372,7 @@ def main() -> None:
     if not args.dry_run and needs_write:
         backup_path = _backup_hive(hive_path)
         print(f"  Backup: {backup_path}")
+        print(f"  (Restore with: sudo cp '{backup_path}' '{hive_path}')")
 
     changed = 0
 

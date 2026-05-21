@@ -140,6 +140,46 @@ HKLM\SYSTEM\ControlSet001\Services\BTHPORT\Parameters\Keys\<adapter>\<device>
 
 ---
 
+## Automatic Backup and Restore
+
+Before writing any changes, `bt-sync` automatically creates a timestamped backup of the
+Windows SYSTEM registry hive **on the Windows partition**:
+
+```
+C:\Windows\System32\config\SYSTEM.bt-sync-backup-YYYYMMDD_HHMMSS
+```
+
+(visible from Linux at `/mnt/windows/Windows/System32/config/SYSTEM.bt-sync-backup-*`)
+
+The backup is only created when changes are actually needed — re-running when already in
+sync skips the backup entirely.
+
+### Restoring the backup
+
+If something goes wrong after booting Windows (e.g. Bluetooth stops working entirely),
+boot back into Linux and restore with:
+
+```bash
+# Find your backup — most recent timestamp is the one to use
+ls /mnt/windows/Windows/System32/config/SYSTEM.bt-sync-backup-*
+
+# Restore it (adjust mount point and timestamp as needed)
+sudo cp /mnt/windows/Windows/System32/config/SYSTEM.bt-sync-backup-20260520_190427 \
+        /mnt/windows/Windows/System32/config/SYSTEM
+```
+
+Then boot back into Windows — Bluetooth will be back to its prior state.
+
+### Cleaning up old backups
+
+Old backups can be deleted safely at any time from Linux or Windows:
+
+```bash
+sudo rm /mnt/windows/Windows/System32/config/SYSTEM.bt-sync-backup-*
+```
+
+---
+
 ## Re-running After Re-pairing
 
 If you re-pair a device in Linux (e.g. after a factory reset), just run `bt-sync` again.
