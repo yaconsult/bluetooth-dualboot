@@ -275,6 +275,35 @@ def _sync_classic(
     return True
 
 
+def _needs_any_write(
+    ble_pairs: list[tuple[BLEKeys, WindowsBLEEntry | None]],
+    classic_pairs: list[tuple[ClassicKeys, WindowsClassicEntry | None]],
+) -> bool:
+    """Return True if at least one device has keys that differ from Windows (or is absent)."""
+    for lk, we in ble_pairs:
+        if we is None:
+            return True
+        new_ltk = reverse_hex_key(lk.ltk) if lk.ltk else None
+        new_irk = reverse_hex_key(lk.irk) if lk.irk else None
+        new_csrk_in = reverse_hex_key(lk.csrk_local) if lk.csrk_local else None
+        new_csrk_out = reverse_hex_key(lk.csrk_remote) if lk.csrk_remote else None
+        if (
+            (new_ltk and new_ltk != we.ltk)
+            or (new_irk and new_irk != we.irk)
+            or (new_csrk_in and we.csrk_inbound and new_csrk_in != we.csrk_inbound)
+            or (new_csrk_out and we.csrk_outbound and new_csrk_out != we.csrk_outbound)
+        ):
+            return True
+
+    for lk, we in classic_pairs:
+        if not lk.link_key:
+            continue
+        if we is None or we.link_key != bytes.fromhex(lk.link_key):
+            return True
+
+    return False
+
+
 def _backup_hive(hive_path: Path) -> Path:
     """Create a timestamped backup of the Windows SYSTEM hive before any writes.
 
@@ -332,25 +361,30 @@ def main() -> None:
         _adapter_win_key(linux_devices[0].adapter_mac, win_ble) if linux_devices else ""
     )
 
-    # 4. Backup hive, then sync all devices
+    # 4. Determine what needs changing, backup only if writes are needed, then sync
     print("\n[4/4] Syncing keys ...")
-    if not args.dry_run:
+
+    # Pre-pair each Linux device with its Windows entry (or None) for the sync loop
+    ble_pairs = [(lk, _find_ble_win_entry(lk, win_ble)) for lk in ble_devices]
+    classic_pairs = [(lk, _find_classic_win_entry(lk, win_classic)) for lk in classic_devices]
+
+    needs_write = _needs_any_write(ble_pairs, classic_pairs)
+    if not args.dry_run and needs_write:
         backup_path = _backup_hive(hive_path)
         print(f"  Backup: {backup_path}")
+
     changed = 0
 
-    for lk in ble_devices:
+    for lk, we in ble_pairs:
         print(f"\n  [BLE] {lk.device_name} ({lk.device_mac})")
-        we = _find_ble_win_entry(lk, win_ble)
         if args.verbose:
             status = "found in Windows" if we else "NOT in Windows — will create"
             print(f"    Windows entry: {status}")
         if _sync_ble(lk, we, adapter_win_key, hive_path, args.dry_run, args.verbose):
             changed += 1
 
-    for lk in classic_devices:
+    for lk, we in classic_pairs:
         print(f"\n  [Classic] {lk.device_name} ({lk.device_mac})")
-        we = _find_classic_win_entry(lk, win_classic)
         if args.verbose:
             status = "found in Windows" if we else "NOT in Windows — will create"
             print(f"    Windows entry: {status}")
