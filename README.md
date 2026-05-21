@@ -122,7 +122,11 @@ Linux (BlueZ) and Windows store BLE keys with **opposite byte order**
 
 1. Reads `LTK`, `IRK`, and `CSRK` from `/var/lib/bluetooth/<adapter>/<device>/info`
 2. Byte-reverses each key to Windows format
-3. Matches the Linux device to its Windows registry entry **by IRK** (not MAC address)
+3. Matches the Linux device to its Windows registry entry using this priority:
+   - **IRK match on the active entry** (present in `ControlSet001\Enum\BTHLE`) — Windows is currently using this entry
+   - **IRK match on inactive entry + single active entry** — Windows re-paired independently; patch the active entry
+   - **IRK match on any entry** — fallback when BTHLE enum is absent
+   - **MAC match** — final fallback for public-address devices
 4. If a match is found → patches the existing entry in-place
 5. If no match → creates a new registry subkey via `reged`
 
