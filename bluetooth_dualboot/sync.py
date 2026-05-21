@@ -96,21 +96,34 @@ def _find_ble_win_entry(lk: BLEKeys, win_ble: list[WindowsBLEEntry]) -> WindowsB
     """Match a Linux BLE device to a Windows registry entry.
 
     Match priority:
-    1. IRK match — handles devices that advertise with a Resolvable Private Address
-       (RPA). Windows stores the entry under the RPA it first saw, but the IRK is
-       the stable identity. Linux stores the identity (static) address.
-    2. MAC match (normal and byte-reversed) — fallback for public-address devices.
+    1. IRK match on an active entry (appears in BTHLE enum — Windows is using it).
+    2. Active entry when the IRK-matched entry is inactive — if there is exactly one
+       active BLE entry and we have an IRK match on an inactive entry, the active
+       entry is almost certainly the same physical device re-paired in Windows. Patch
+       it so Windows can actually use the updated keys.
+    3. IRK match on any entry — fallback if BTHLE enum is absent or stale.
+    4. MAC match (normal and byte-reversed) — fallback for public-address devices.
     """
     linux_irk = reverse_hex_key(lk.irk) if lk.irk else None
     normal, reversed_ = _mac_candidates(lk.device_mac)
-    mac_match = None
+    irk_match: WindowsBLEEntry | None = None
+    mac_match: WindowsBLEEntry | None = None
+    active_entries = [we for we in win_ble if we.is_active]
     for we in win_ble:
-        # IRK match — most reliable for RPA devices
-        if linux_irk and we.irk and we.irk == linux_irk:
-            return we
+        irk_hit = linux_irk and we.irk and we.irk == linux_irk
+        if irk_hit:
+            if we.is_active:
+                return we
+            if irk_match is None:
+                irk_match = we
         if we.device_key in (normal, reversed_):
             mac_match = we
-    return mac_match
+    # IRK matched an inactive entry — if there is exactly one active BLE entry,
+    # that active entry is the device Windows is actually using (re-paired since
+    # the last Linux sync). Patch it instead.
+    if irk_match is not None and len(active_entries) == 1:
+        return active_entries[0]
+    return irk_match or mac_match
 
 
 def _find_classic_win_entry(

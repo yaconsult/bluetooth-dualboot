@@ -401,9 +401,40 @@ test tomorrow.
   it's no longer needed now that Windows has a fresh `d3b4bb9c552e` entry
 - `bt-sync` idempotency check and backup-on-write-only are working correctly
 
+### Active Entry Matching Fix
+
+After the re-pairings, the registry had three BLE entries for the mouse:
+- `e49f640be81c` — old stale entry from a previous sync (inactive)
+- `fa7388ba3bfb` — entry with IRK matching Linux, but inactive (Windows not using it)
+- `f6a2f5ec714b` — fresh Windows-only re-pair, **active** (`FriendlyName` in BTHLE enum)
+
+`bt-sync` was matching by IRK to `fa7388ba3bfb` (already in sync) and doing nothing —
+while Windows was connecting to `f6a2f5ec714b` with completely different keys.
+
+**Root cause:** IRK-based matching alone is insufficient when Windows has re-paired
+independently and the new entry has a different IRK. The BTHLE enum (`ControlSet001\Enum\BTHLE\Dev_<addr>`) indicates which entry Windows is actually using.
+
+**Fix implemented:**
+- `WindowsBLEEntry.is_active` field — set from BTHLE enum presence
+- `_read_active_bthle_device_keys()` in `windows_bt.py` — reads BTHLE enum
+- `_find_ble_win_entry()` in `sync.py` — updated matching logic:
+  1. IRK match on active entry → return immediately
+  2. IRK match on inactive entry + exactly one active entry → return the active entry
+     (it's the device Windows re-paired; patch it to match Linux)
+  3. IRK match on inactive entry + multiple active entries → use IRK match (safe)
+  4. MAC match → fallback
+- 7 new tests covering all matching cases
+
+**Dry-run output confirms correct target:**
+```
+Action: PATCH existing Windows BLE entry
+LTK:  462026BA... → 556D6AA5...    ← Windows→Linux
+IRK:  915B169E... → 4417F67C...    ← Windows→Linux
+CSRK(inbound):  E573A5E3... → D56A9161...
+CSRK(outbound): ACFE2E0B... → ABBCE779...
+```
+
 ### Remaining
 
-- [ ] Boot Linux — pair mouse as BLE (`E4:9F:64:0B:E8:1C`)
-- [ ] Run `sudo uv run bt-sync` to sync keys
+- [ ] Run `sudo uv run bt-sync` live to patch active Windows entry
 - [ ] Boot Windows — confirm mouse connects automatically without re-pairing
-- [ ] Clean up stale `d8b8c38e9fd6` registry entry if still present after sync

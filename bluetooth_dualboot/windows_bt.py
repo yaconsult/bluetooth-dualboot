@@ -33,6 +33,7 @@ class WindowsBLEEntry:
     address: int
     address_type: int
     auth_req: int
+    is_active: bool = False  # True if this entry appears in the BTHLE enum (Windows is using it)
 
 
 @dataclass
@@ -52,13 +53,42 @@ def _open_bt_keys(reg: Registry.Registry) -> Registry.RegistryKey | None:
         return None
 
 
+_BTHLE_ENUM_PATH = "ControlSet001\\Enum\\BTHLE"
+
+
+def _read_active_bthle_device_keys(reg: Registry.Registry) -> set[str]:
+    """Return the set of device_key strings that appear in the BTHLE enum.
+
+    The BTHLE enum (ControlSet001\\Enum\\BTHLE\\Dev_<addr>) is only populated
+    for the entry Windows is actively using — it has a FriendlyName and is the
+    one the BT stack will try to connect to. Keys are lowercase hex MAC strings
+    (e.g. 'f6a2f5ec714b').
+    """
+    active: set[str] = set()
+    try:
+        bthle_root = reg.open(_BTHLE_ENUM_PATH)
+    except Registry.RegistryKeyNotFoundException:
+        return active
+    for sk in bthle_root.subkeys():
+        # Subkey names are like 'Dev_f6a2f5ec714b'
+        name = sk.name()
+        if name.startswith("Dev_"):
+            active.add(name[4:].lower())
+    return active
+
+
 def read_windows_ble_entries(hive_path: Path) -> list[WindowsBLEEntry]:
-    """Parse the Windows SYSTEM hive and return all BLE device entries."""
+    """Parse the Windows SYSTEM hive and return all BLE device entries.
+
+    Sets is_active=True on entries whose device_key appears in the BTHLE enum,
+    meaning Windows is actively using that pairing.
+    """
     reg = Registry.Registry(str(hive_path))
     bt_root = _open_bt_keys(reg)
     if bt_root is None:
         return []
 
+    active_keys = _read_active_bthle_device_keys(reg)
     entries: list[WindowsBLEEntry] = []
 
     for adapter_key in bt_root.subkeys():
@@ -84,6 +114,7 @@ def read_windows_ble_entries(hive_path: Path) -> list[WindowsBLEEntry]:
                     address=values.get("Address", 0),
                     address_type=values.get("AddressType", 0),
                     auth_req=values.get("AuthReq", 0),
+                    is_active=device_key.name().lower() in active_keys,
                 )
             )
 
