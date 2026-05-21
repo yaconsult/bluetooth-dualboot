@@ -83,11 +83,54 @@ Key=8CF9AB0A68AFF9D2562F406B812DAB1C
 Counter=0
 ```
 
+### Next Steps (from Session 1)
+
+- [x] Confirm `uv` is available
+- [x] Set up `.venv` with `python-registry`, `black`, `ruff`, `pytest`
+- [x] Explore Windows registry key structure
+- [x] Write the sync script
+- [x] Tests passing
+
+---
+
+## Session 2 — 2026-05-20 (continued)
+
+### Key Discovery: Endianness Mismatch
+
+Inspected the Windows registry and Linux info file side-by-side. Found:
+- `ERand` and `EDiv` are **identical** in both OSes (same pairing session)
+- LTK and IRK values are **byte-reversed** between Linux and Windows
+- This is the known Linux(big-endian) ↔ Windows(little-endian) BLE key storage difference
+
+Confirmed with Python: `reverse_hex_key(linux_ltk) == windows_ltk` → **True**
+
+### Design Decisions
+
+- **Generic tool** — auto-detects adapter, devices, NTFS mount, and hive path
+- **CLI flags**: `--windows-mount`, `--bluez-dir`, `--dry-run`, `--verbose`
+- **Sync all BLE devices** that have matching entries in both OSes
+- **In-place hive patching** — updates existing Windows registry entry (no delete/recreate)
+- Requires `sudo` (BlueZ dir and hive are root-owned)
+
+### Module Structure
+
+```
+bluetooth_dualboot/
+    utils.py       — MAC normalization, byte-reversal, NTFS mount detection
+    linux_bt.py    — Read BLE keys from /var/lib/bluetooth/
+    windows_bt.py  — Read/write Windows SYSTEM hive via python-registry + binary patching
+    sync.py        — CLI entry point and orchestration
+tests/
+    test_utils.py
+    test_linux_bt.py
+```
+
+### Test Results
+
+12/12 tests passing. ruff + black clean.
+
 ### Next Steps
 
-- [ ] Confirm `uv` is available or install it
-- [ ] User re-pairs mouse in Windows
-- [ ] Explore Windows registry key structure for BLE devices to confirm write target
-- [ ] Set up `.venv` with required registry-parsing library (`python-registry` or `regipy`)
-- [ ] Write the sync script
-- [ ] Test
+- [ ] Run `bt-sync --dry-run` to verify detection and key computation against live system
+- [ ] Run `bt-sync` (write mode) and test mouse in Windows
+- [ ] Push to GitHub once verified working
