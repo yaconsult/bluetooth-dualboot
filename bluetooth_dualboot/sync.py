@@ -93,11 +93,24 @@ def _mac_candidates(mac: str) -> tuple[str, str]:
 
 
 def _find_ble_win_entry(lk: BLEKeys, win_ble: list[WindowsBLEEntry]) -> WindowsBLEEntry | None:
+    """Match a Linux BLE device to a Windows registry entry.
+
+    Match priority:
+    1. IRK match — handles devices that advertise with a Resolvable Private Address
+       (RPA). Windows stores the entry under the RPA it first saw, but the IRK is
+       the stable identity. Linux stores the identity (static) address.
+    2. MAC match (normal and byte-reversed) — fallback for public-address devices.
+    """
+    linux_irk = reverse_hex_key(lk.irk) if lk.irk else None
     normal, reversed_ = _mac_candidates(lk.device_mac)
+    mac_match = None
     for we in win_ble:
-        if we.device_key in (normal, reversed_):
+        # IRK match — most reliable for RPA devices
+        if linux_irk and we.irk and we.irk == linux_irk:
             return we
-    return None
+        if we.device_key in (normal, reversed_):
+            mac_match = we
+    return mac_match
 
 
 def _find_classic_win_entry(

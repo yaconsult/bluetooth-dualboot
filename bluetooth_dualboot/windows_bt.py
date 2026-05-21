@@ -151,7 +151,7 @@ def patch_ble_entry(
         raise RuntimeError("BTHPORT\\Parameters\\Keys not found in hive")
 
     try:
-        device_node = bt_root.find_subkey(adapter_key).find_subkey(device_key)
+        device_node = bt_root.subkey(adapter_key).subkey(device_key)
     except Exception as exc:
         raise KeyError(f"Registry key {adapter_key}\\{device_key} not found in hive") from exc
 
