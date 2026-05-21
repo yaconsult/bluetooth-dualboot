@@ -220,11 +220,7 @@ def patch_classic_entry(
 
 def _run_reged_import(hive_path: Path, reg_content: str) -> None:
     """Write reg_content to a temp .reg file and import it into the hive via reged."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".reg", delete=False, encoding="utf-16-le"
-    ) as f:
-        # .reg files must start with the Windows registry header
-        f.write("\ufeff")  # UTF-16 BOM
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".reg", delete=False, encoding="utf-8") as f:
         f.write(reg_content)
         tmp_path = f.name
 
@@ -234,7 +230,8 @@ def _run_reged_import(hive_path: Path, reg_content: str) -> None:
             capture_output=True,
             text=True,
         )
-        if result.returncode != 0:
+        # reged exit codes: 0 = success, 1 = fatal error, 2 = warnings only (still succeeded)
+        if result.returncode == 1:
             raise RuntimeError(
                 f"reged import failed (exit {result.returncode}):\n"
                 f"stdout: {result.stdout}\nstderr: {result.stderr}"
@@ -244,12 +241,12 @@ def _run_reged_import(hive_path: Path, reg_content: str) -> None:
 
 
 def _bytes_to_reg_hex(data: bytes) -> str:
-    """Format bytes as a Windows .reg hex(3): value string."""
-    return "hex(b):" + ",".join(f"{b:02x}" for b in data)
+    """Format bytes as a Windows .reg REG_BINARY value (hex: prefix)."""
+    return "hex:" + ",".join(f"{b:02x}" for b in data)
 
 
 def _qword_to_reg_hex(value: int) -> str:
-    """Format a 64-bit int as a Windows .reg hex(b): (QWORD) value string."""
+    """Format a 64-bit int as a Windows .reg REG_QWORD value (hex(b): prefix)."""
     b = value.to_bytes(8, "little")
     return "hex(b):" + ",".join(f"{x:02x}" for x in b)
 

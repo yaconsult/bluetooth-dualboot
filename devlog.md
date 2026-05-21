@@ -159,8 +159,87 @@ Classic BT link keys do NOT need byte-reversal between Linux and Windows
 
 16/16 tests passing. ruff + black clean.
 
-### Next Steps
+### Next Steps (from Session 3)
 
-- [ ] Run `sudo uv run bt-sync --dry-run --verbose` to verify live system detection
-- [ ] Run `sudo uv run bt-sync` and test mouse in Windows
-- [ ] Push to GitHub once verified working
+- [x] Run dry-run — passed
+- [x] Run live sync — passed (with bugs found and fixed, see Session 4)
+- [ ] Boot into Windows and confirm mouse connects automatically
+- [ ] Push to GitHub
+
+---
+
+## Session 4 — 2026-05-20 (continued)
+
+### Changes
+
+- **Auto-backup** of Windows SYSTEM hive added to `sync.py` — runs automatically before
+  any write, timestamped, stored alongside the hive:
+  `SYSTEM.bt-sync-backup-YYYYMMDD_HHMMSS`
+- **Derived `auth_req`** from Linux `ltk_authenticated` field via `BLEKeys.auth_req` property
+  (BT spec Vol 3 Part H Section 3.5.1 bitmask). No longer hardcoded.
+- Documented Windows sentinel values in code comments (`InboundSignCounter`, `CEntralIRKStatus`)
+
+### Bugs Found and Fixed During Live Testing
+
+#### Bug 1 — `reged` exit code 2 incorrectly treated as fatal error
+
+**Symptom:** `RuntimeError: reged import failed (exit 2)` even though reged output said
+`operation SUCCEEDED`.
+
+**Root cause:** `reged` uses exit code 2 for "warnings present" (e.g. UTF-16 BOM notice),
+not for failure. Exit 1 is the actual fatal error code.
+
+**Fix:** Changed error check from `returncode != 0` to `returncode == 1`.
+
+Also switched `.reg` temp file encoding from `utf-16-le` to `utf-8` — reged handles
+UTF-8 fine and the UTF-16 BOM was the source of the warning.
+
+#### Bug 2 — Registry binary values written as QWORD integers instead of bytes
+
+**Symptom:** After import, `LTK`, `IRK`, `CSRK` values read back as Python `int` instead
+of `bytes`, meaning they were stored as REG_QWORD (64-bit integer) instead of REG_BINARY.
+
+**Root cause:** `.reg` file format uses `hex(b):` prefix for `REG_QWORD` and `hex:` prefix
+for `REG_BINARY`. The code was using `hex(b):` for all binary data.
+
+**Fix:** Changed `_bytes_to_reg_hex()` to use `hex:` (REG_BINARY). Kept `hex(b):` only
+in `_qword_to_reg_hex()` for actual 64-bit integer values (ERand, Address, counters).
+
+### Live Test Results
+
+**Run 1** (first attempt): Failed with Bug 1 (false error). Data was actually written
+but with Bug 2 (wrong types). Restored from auto-backup.
+
+**Run 2** (after Bug 1 fix): Succeeded (exit 0). Data written but Bug 2 present
+(keys stored as integers). Restored from auto-backup.
+
+**Run 3** (after Bug 2 fix): Succeeded (exit 0). All values correct types and values:
+
+```
+Subkey: e49f640be81c  (BT5.0 Mouse)
+  [bytes] 'LTK':  09A7233B7CFA780CB6DDF340BAACA16A  ✅ correct (byte-reversed from Linux)
+  [bytes] 'IRK':  112661565135D99624FE068449DCA89C  ✅ correct (byte-reversed from Linux)
+  [int  ] 'KeyLength': 16                          ✅
+  [int  ] 'ERand': 4383710011340050161              ✅ matches Linux
+  [int  ] 'EDIV':  36159                            ✅ matches Linux
+  [int  ] 'AuthReq': 41 (0x29)                     ✅ derived from ltk_authenticated=0
+  [int  ] 'InboundSignCounter': 0xFFFFFFFFFFFFFFFF  ✅ Windows uninitialized sentinel
+  [int  ] 'OutboundSignCounter': 0                  ✅ correct initial value
+  [int  ] 'CEntralIRKStatus': 1                     ✅ IRK verified
+
+Value: dfd64fc9dc97  (Baseus BA01 Classic)
+  [bytes] 'dfd64fc9dc97': AF34A492D9CA9CA11330C4FC4D8475E3  ✅ matches Linux LinkKey
+```
+
+**Verification run** (dry-run after live sync):
+```
+Found 2 BLE + 1 Classic entry(ies) in Windows.
+BLE keys already in sync — nothing to do.
+Classic key already in sync — nothing to do.
+```
+Idempotent — re-running detects no changes needed. ✅
+
+### Remaining
+
+- [ ] Boot into Windows — confirm BT5.0 Mouse connects without re-pairing
+- [ ] Push to GitHub

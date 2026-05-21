@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -273,6 +275,18 @@ def _sync_classic(
     return True
 
 
+def _backup_hive(hive_path: Path) -> Path:
+    """Create a timestamped backup of the Windows SYSTEM hive before any writes.
+
+    The backup is written alongside the original hive file. If anything goes
+    wrong the user can restore it by copying it back over the SYSTEM file.
+    """
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = hive_path.with_name(f"SYSTEM.bt-sync-backup-{timestamp}")
+    shutil.copy2(hive_path, backup_path)
+    return backup_path
+
+
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
@@ -318,8 +332,11 @@ def main() -> None:
         _adapter_win_key(linux_devices[0].adapter_mac, win_ble) if linux_devices else ""
     )
 
-    # 4. Sync all devices
+    # 4. Backup hive, then sync all devices
     print("\n[4/4] Syncing keys ...")
+    if not args.dry_run:
+        backup_path = _backup_hive(hive_path)
+        print(f"  Backup: {backup_path}")
     changed = 0
 
     for lk in ble_devices:
