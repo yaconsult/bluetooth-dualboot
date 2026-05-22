@@ -1,8 +1,17 @@
 # bluetooth-dualboot
 
-Sync Bluetooth pairing keys between Linux and Windows so every paired Bluetooth
-device (mice, keyboards, headphones, etc.) works in **both Fedora Linux and
-Windows 11** without re-pairing when you switch OS from GRUB.
+Sync Bluetooth pairing keys between Linux and Windows **on the same dual-boot
+computer** so every paired Bluetooth device (mice, keyboards, headphones, etc.)
+works in both OSes without re-pairing every time you reboot.
+
+Designed for a **single machine** running **Fedora Linux + Windows 11** side by
+side (dual-boot via GRUB).  This is *not* for syncing Bluetooth between two
+separate computers.
+
+> **Note:** This only applies to devices that pair directly with the computer's
+> **built-in Bluetooth adapter** (or a standard USB Bluetooth adapter).  Mice and
+> keyboards that come with a **proprietary USB dongle** (2.4 GHz receiver) are not
+> affected — their pairing is between the device and the dongle, not the OS.
 
 Supports **BLE (Bluetooth Low Energy)** and **Classic BR/EDR** devices.
 
@@ -10,11 +19,15 @@ Supports **BLE (Bluetooth Low Energy)** and **Classic BR/EDR** devices.
 
 ## The Problem
 
-When you pair a Bluetooth device in one OS, that OS generates unique cryptographic
-keys. Pairing the same device in the other OS generates *different* keys and
-overwrites the device's stored bond — breaking the first OS's connection.
+On a dual-boot computer, Linux and Windows share the same Bluetooth adapter but
+maintain **separate pairing key stores**.  When you pair a Bluetooth device in one
+OS, that OS generates unique cryptographic keys.  Pairing the same device in the
+other OS generates *different* keys and overwrites the device's stored bond —
+breaking the first OS's connection.
 
-Every re-pair breaks the other OS.
+Every re-pair in one OS breaks the other OS.  This only affects devices that use
+the computer's native Bluetooth adapter — **not** devices with a proprietary USB
+dongle/receiver, which store their pairing on the dongle itself.
 
 ## The Solution
 
@@ -394,6 +407,10 @@ follow these exact steps.  Tested with the **TeckNet EWM01308** mouse on
 | TeckNet EWM01308 | Mouse | Classic (BT3.0) | Fedora 44 (BlueZ 5.86) + Windows 11 | None (standard link key) | ✅ Working |
 
 **Adapter**: MediaTek MT7921 (built-in laptop adapter, `C0:35:32:AC:13:4A`)
+
+Note: The TeckNet EWM01308 ships with a USB dongle but **also supports native
+Bluetooth pairing** without the dongle.  The dual-boot problem only occurs when
+pairing via the computer's built-in Bluetooth adapter (without the dongle).
 
 If you test with other hardware, please report your results.
 

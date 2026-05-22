@@ -1,8 +1,13 @@
 # BluetoothMouseDualBoot — Dev Log
 
 ## Goal
-Make the same Bluetooth mouse work seamlessly in both Fedora Linux and Windows 11,
-regardless of which OS is booted from GRUB, without manual re-pairing.
+Make the same Bluetooth mouse work seamlessly in both Fedora Linux and Windows 11
+**on a single dual-boot computer** (same Bluetooth adapter, shared via GRUB),
+without manual re-pairing every time the OS is switched.
+
+This applies to devices paired via the computer's **built-in Bluetooth adapter**
+— not devices that use a proprietary USB dongle/receiver (those store pairing on
+the dongle and work across OSes without any intervention).
 
 ---
 
