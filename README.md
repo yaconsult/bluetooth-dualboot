@@ -47,7 +47,7 @@ Pair each device in **both OSes**, then run `bt-sync` to unify the keys:
 
 - Dual-boot system: **Fedora Linux** (or any distro with BlueZ) + **Windows 11**
 - Windows NTFS partition mounted in Linux (e.g. at `/mnt/windows`)
-- `sudo` access
+- `sudo` access (on the Linux side only — no Windows admin account needed)
 - `reged` (part of the `chntpw` package) — for creating new registry entries
 - `python3` + [`uv`](https://github.com/astral-sh/uv) — for running the tool
 
@@ -121,6 +121,36 @@ BLE devices should reconnect immediately in Linux.
 
 Reboot into Windows — your Bluetooth devices should connect automatically.
 No re-pairing needed.
+
+### When do I need to re-run `bt-sync`?
+
+Syncing is a **one-time operation per pairing**.  Once the keys are synced, both
+OSes share the same keys and the device works in both without further action —
+you can reboot between Linux and Windows as many times as you want.
+
+You only need to re-run `bt-sync` if:
+
+- You **re-pair** the device in either OS (re-pairing generates new keys)
+- You **add a new Bluetooth device** that needs to work in both OSes
+- You **reinstall** one of the OSes
+
+---
+
+## Security & Permissions
+
+`bt-sync` requires `sudo` because:
+
+- **BlueZ key files** (`/var/lib/bluetooth/`) are owned by root and readable
+  only by the Bluetooth daemon
+- **Windows registry hive** (`SYSTEM`) needs to be read from the mounted NTFS
+  partition (and optionally written to for Classic BR/EDR sync)
+
+Everything runs **entirely from Linux**.  No Windows login, admin account, or
+running Windows session is involved — the tool reads the registry hive as a
+flat file from the mounted NTFS partition while Windows is not running.
+
+The tool does **not** make network requests, phone home, or access anything
+beyond the BlueZ directory and the Windows SYSTEM hive.
 
 ---
 
