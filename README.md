@@ -309,18 +309,67 @@ How to pair on BLE (BT5.0) with the TeckNet EWM01308:
 4. Wait ~5–10 seconds — **"BT5.0 Mouse"** will appear
 5. Pair "BT5.0 Mouse"
 
-If you accidentally pair the BT3.0 device, remove it and try again.  If "BT5.0
-Mouse" never appears, the device may already be bonded to another host via BLE —
-remove that bond first (see "Device won't advertise BLE" below).
+If "BT5.0 Mouse" never appears, the device may already be bonded to another host
+via BLE — remove that bond first (see "Device won't advertise BLE" below).
 
 BLE (BT5.0) is recommended — better battery life and handled natively by `bt-sync`.
 
-To check which protocol Linux actually paired with:
+#### How to check which protocol you paired with
+
 ```bash
 sudo cat /var/lib/bluetooth/<adapter>/<device>/info | grep -i "SupportedTechnologies\|AddressType"
 ```
-- `SupportedTechnologies=LE;` + `AddressType=static` → **BLE (correct)**
-- `SupportedTechnologies=BR/EDR;` + `LinkKey` section present → **Classic**
+- `SupportedTechnologies=LE;` + `AddressType=static` → **BLE (BT5.0)**
+- `SupportedTechnologies=BR/EDR;` + `LinkKey` section present → **Classic (BT3.0)**
+
+On Windows, check Device Manager → Bluetooth: the device name itself usually
+indicates the protocol ("BT5.0 Mouse" vs "BT3.0 Mouse").
+
+#### Why both OSes must use the same protocol
+
+BLE and Classic BR/EDR use **completely different key types** that are not
+interchangeable:
+
+| | BLE (BT5.0) | Classic BR/EDR (BT3.0) |
+|---|---|---|
+| **Encryption key** | LTK (Long Term Key) | Link Key |
+| **Identity key** | IRK (Identity Resolving Key) | None |
+| **Key exchange** | SMP (Security Manager Protocol) | SSP (Secure Simple Pairing) |
+| **Address type** | Static random (changes per pairing) | Public (fixed) |
+| **BlueZ storage** | `[LongTermKey]`, `[IdentityResolvingKey]` | `[LinkKey]` |
+
+`bt-sync` syncs **BLE keys as BLE** and **Classic keys as Classic**.  It cannot
+convert a BLE LTK into a Classic Link Key or vice versa — they are fundamentally
+different cryptographic protocols.
+
+#### What happens if you pair the wrong protocol
+
+If you pair BT3.0 in one OS and BT5.0 in the other:
+
+- `bt-sync` will see them as **two unrelated devices** (different MACs, different
+  key types, different protocol) — it won't match them to each other
+- The device will work in each OS independently, but only via the protocol paired
+  in that OS — there is no cross-OS key sharing
+- You may end up with **two entries** in your Bluetooth settings (one BT3.0, one
+  BT5.0), which is confusing but not harmful
+
+**Symptoms of a protocol mismatch:**
+- `bt-sync --verbose` shows the device in one OS but not matched to the other
+- The device works in both OSes but only after re-pairing each time (defeating
+  the purpose of `bt-sync`)
+- You see both "BT3.0 Mouse" and "BT5.0 Mouse" in your paired devices list
+
+#### How to fix a protocol mismatch
+
+1. **Remove the device in both OSes** — remove *all* entries (both BT3.0 and
+   BT5.0 if present)
+2. **Decide on a protocol** — BLE (BT5.0) is recommended for mice/keyboards
+   (better battery life, lower latency)
+3. **Re-pair in both OSes using the same protocol**:
+   - Press the pairing button on the device
+   - **Wait** for the correct device name to appear ("BT5.0 Mouse" for BLE)
+   - Pair that one — ignore the other
+4. **Run `bt-sync`** and restart Bluetooth as usual
 
 ### Device won't advertise BLE for pairing (keeps reconnecting to old host)
 
