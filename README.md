@@ -506,9 +506,8 @@ follow these exact steps.  Tested with the **TeckNet EWM01308** mouse on
 
 **Adapter**: MediaTek MT7921 (built-in laptop adapter, `C0:35:32:AC:13:4A`)
 
-Note: The TeckNet EWM01308 ships with a USB dongle but **also supports native
-Bluetooth pairing** without the dongle.  The dual-boot problem only occurs when
-pairing via the computer's built-in Bluetooth adapter (without the dongle).
+Note: The TeckNet EWM01308 pairs directly with the computer's built-in Bluetooth
+adapter — it does not use a proprietary USB dongle.
 
 If you test with other hardware, please report your results.
 
