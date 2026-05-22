@@ -192,6 +192,33 @@ def test_patch_ble_info_file_preserves_general(tmp_path):
     assert keys.address_type == "static"
 
 
+def test_patch_ble_info_file_updates_peripheral_and_slave_ltk(tmp_path):
+    """patch_ble_info_file should update PeripheralLongTermKey and SlaveLongTermKey."""
+    info = _write_info(tmp_path, BLE_INFO)
+    patch_ble_info_file(
+        info_path=info,
+        ltk="AABBCCDDEEFF00112233445566778899",
+        ltk_rand=9999,
+        ltk_ediv=1234,
+        irk="11223344556677889900AABBCCDDEEFF",
+        peripheral_ltk="AABBCCDDEEFF00112233445566778899",
+        peripheral_ltk_rand=9999,
+        peripheral_ltk_ediv=1234,
+    )
+    keys = read_ble_keys(info, "C0:35:32:AC:13:4A", "E4:9F:64:0B:E8:1C")
+    assert keys is not None
+    assert keys.peripheral_ltk == "AABBCCDDEEFF00112233445566778899"
+    assert keys.peripheral_ltk_ediv == 1234
+    assert keys.peripheral_ltk_rand == 9999
+    # SlaveLongTermKey should also be written (read manually since BLEKeys doesn't parse it)
+    import configparser
+
+    parser = configparser.ConfigParser()
+    parser.read(str(info))
+    assert "SlaveLongTermKey" in parser
+    assert parser["SlaveLongTermKey"]["Key"] == "AABBCCDDEEFF00112233445566778899"
+
+
 def test_patch_ble_info_file_creates_missing_sections(tmp_path):
     """patch_ble_info_file creates sections that don't exist yet."""
     # Minimal BLE info with no key sections

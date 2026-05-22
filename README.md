@@ -146,9 +146,13 @@ The tool:
    - **IRK match on the active entry** (present in `ControlSet001\Enum\BTHLE`)
    - **IRK match on inactive entry + single active entry** — fallback
    - **IRK match on any entry** — fallback when BTHLE enum is absent
-   - **MAC match** — final fallback for public-address devices
-3. Byte-reverses each Windows key to Linux format (little-endian → big-endian)
-4. Writes the keys into `/var/lib/bluetooth/<adapter>/<device>/info`
+   - **MAC match** — fallback for public-address devices
+   - **Device name match** — final fallback for devices that change IRK and address
+     per pairing
+3. If the device address changed (BLE devices often generate a new static random
+   address per pairing), renames the Linux device directory to the Windows address
+4. Writes all keys (`LongTermKey`, `PeripheralLongTermKey`, `IRK`, `CSRK`) into
+   `/var/lib/bluetooth/<adapter>/<device>/info`
 5. After sync, `systemctl restart bluetooth` loads the new keys
 
 #### Why Windows → Linux, not the reverse?
@@ -243,20 +247,37 @@ If the device still fails, start fresh:
 
 ### Mouse/keyboard has both BT3.0 and BT5.0 modes
 
-Some devices (e.g. TeckNet EWM01308) advertise as two separate Bluetooth devices —
-one Classic BR/EDR (BT3.0) and one BLE (BT5.0). **Both OSes must pair using the same
-protocol** — `bt-sync` cannot bridge keys between BLE and Classic.
+Some devices advertise as **two separate Bluetooth devices** — one Classic BR/EDR
+(BT3.0) and one BLE (BT5.0) — using different MAC addresses and different protocols
+on the same physical hardware.  **Both OSes must pair using the same protocol** —
+`bt-sync` cannot bridge keys between BLE and Classic.
 
-- BLE (BT5.0) is recommended — better battery life, handled natively by `bt-sync`
-- If the device only shows up as Classic during pairing, it may be trying to reconnect
-  to a previous BLE host — remove that pairing first, then retry
+The **TeckNet EWM01308** mouse is a known example.  When you press the pairing
+button, it advertises Classic (BT3.0) **first** for several seconds, then switches
+to BLE (BT5.0).  There is no physical switch or button sequence to select the
+protocol — you have to **wait** for the BT3.0 advertising to stop and the BT5.0
+advertising to start before pairing.
 
-To check which protocol Linux paired with:
+How to pair on BLE (BT5.0) with the TeckNet EWM01308:
+
+1. Press the pairing button — the LED blinks fast
+2. Open your OS Bluetooth settings and start scanning
+3. You will see **"BT3.0 Mouse"** appear first — **do not pair it**
+4. Wait ~5–10 seconds — **"BT5.0 Mouse"** will appear
+5. Pair "BT5.0 Mouse"
+
+If you accidentally pair the BT3.0 device, remove it and try again.  If "BT5.0
+Mouse" never appears, the device may already be bonded to another host via BLE —
+remove that bond first (see "Device won't advertise BLE" below).
+
+BLE (BT5.0) is recommended — better battery life and handled natively by `bt-sync`.
+
+To check which protocol Linux actually paired with:
 ```bash
 sudo cat /var/lib/bluetooth/<adapter>/<device>/info | grep -i "SupportedTechnologies\|AddressType"
 ```
-If `SupportedTechnologies=LE` → BLE. If `AddressType` is absent and a `LinkKey`
-section is present → Classic.
+- `SupportedTechnologies=LE;` + `AddressType=static` → **BLE (correct)**
+- `SupportedTechnologies=BR/EDR;` + `LinkKey` section present → **Classic**
 
 ### Device won't advertise BLE for pairing (keeps reconnecting to old host)
 
@@ -266,6 +287,115 @@ to that host on power-up instead of advertising for new pairings. Fix:
 1. On the **old paired OS**, remove/forget the device
 2. Power-cycle the device — it will now advertise freely
 3. Pair on the new OS
+
+### `bt-sync` says "No matching Windows BLE entry found"
+
+Some BLE devices generate a **new IRK and address** every time they pair, so the
+tool can't match by IRK or MAC.  `bt-sync` falls back to **device name matching**
+in this case.  For the fallback to work:
+
+1. There must be exactly **one** active BLE device in the Windows registry
+2. The device name must match between Linux and Windows
+3. The device must have been scanned in Linux at least once (name cached in
+   `/var/lib/bluetooth/<adapter>/cache/`)
+
+If the fallback still fails, pair the device fresh in both OSes (Linux first,
+then Windows) and run `bt-sync` again.
+
+---
+
+## BLE Quirks: Why Some Devices Are Harder Than Others
+
+Most dual-boot Bluetooth guides assume simple BLE behaviour: the device keeps
+the same MAC address and IRK across pairings, and keys just need byte-reversal
+between Windows and Linux.  **This is not always true.**
+
+Some BLE devices (notably cheap HID peripherals like the TeckNet EWM01308 mouse)
+exhibit a combination of behaviours that makes dual-boot key sharing significantly
+more difficult:
+
+### What makes these devices tricky
+
+| Behaviour | "Normal" BLE device | Tricky device (e.g. TeckNet EWM01308) |
+|-----------|---------------------|---------------------------------------|
+| MAC address | Same across pairings | **New static random address per pairing** |
+| IRK | Same across pairings | **New IRK per pairing** |
+| Advertising | Undirected (visible to all) | **Directed to last-paired host only** |
+| Key byte order | May need reversal | **No reversal needed** |
+| LTK roles | Separate central/peripheral | **Same LTK for both roles** |
+| Protocol selection | Single protocol or physical switch | **Advertises BT3.0 first, then BT5.0 after a delay** |
+
+**Each of these quirks breaks a different assumption** in typical dual-boot tools:
+
+1. **New address per pairing**: After pairing in Windows, the device has a
+   different MAC than Linux knows.  Linux scans for the old address and never
+   finds the device.  `bt-sync` handles this by renaming the Linux device
+   directory to the Windows address.
+
+2. **New IRK per pairing**: The tool can't match the Linux device to its Windows
+   counterpart by IRK (they're completely different).  `bt-sync` falls back to
+   matching by device name.
+
+3. **Directed advertising**: After bonding, the device only talks to the host it
+   last paired with.  If the keys are wrong, the device appears completely
+   invisible — not just "paired but won't connect" but literally absent from
+   BLE scans.  This makes debugging extremely confusing.
+
+4. **No byte reversal**: Contrary to widespread advice, BLE keys (LTK, IRK,
+   CSRK) do **not** need byte-reversal between Windows and Linux.  Both stores
+   use the same byte order.  Reversing keys causes a MIC Failure on connection
+   — an error identical in appearance to having the wrong key entirely.
+
+5. **Same LTK for both roles**: BlueZ maintains separate `[LongTermKey]` and
+   `[PeripheralLongTermKey]` sections.  If only one is updated, encryption
+   fails when the device initiates reconnection (which mice always do).
+   `bt-sync` writes the Windows LTK to both sections.
+
+6. **BT3.0-first dual advertising**: The device advertises Classic BR/EDR
+   (BT3.0) first when the pairing button is pressed, then switches to BLE
+   (BT5.0) after several seconds.  There is no physical switch to select the
+   protocol.  If you pair the BT3.0 device by mistake, the keys are Classic
+   link keys and incompatible with the BLE pairing on the other OS.  You must
+   wait for "BT5.0 Mouse" to appear and pair that instead.
+
+### Step-by-step for tricky BLE devices
+
+If you have a BLE device (mouse, keyboard) that fails with the standard workflow,
+follow these exact steps.  Tested with the **TeckNet EWM01308** mouse on
+**Fedora 44** (BlueZ 5.86, kernel 6.x) and **Windows 11**.
+
+1. **Remove the device in both OSes** (Linux: Bluetooth settings → Remove;
+   Windows: Bluetooth settings → Remove device)
+2. **Boot Linux, pair the device via BLE** — this establishes a Linux device
+   directory and caches the device name.  If the device has dual BT3.0/BT5.0
+   modes (like the TeckNet), wait for "BT5.0 Mouse" to appear before pairing.
+3. **Boot Windows, pair the device via BLE** — again, make sure you pair the
+   BT5.0 device, not BT3.0.  This is the canonical pairing; the device stores
+   Windows' host identity
+4. **Boot Linux**, mount the Windows partition, and run:
+   ```bash
+   sudo uv run bt-sync --verbose
+   ```
+   The output should show the address change and key updates.
+5. **Restart Bluetooth**:
+   ```bash
+   sudo systemctl restart bluetooth
+   ```
+6. **Wake the device** (move the mouse / press a key) — it should connect
+   within a few seconds
+7. **Verify** the device works, then reboot into Windows to confirm it still
+   works there too
+
+### Known tested hardware
+
+| Device | Type | Protocol | OS | Quirks | Status |
+|--------|------|----------|----|--------|--------|
+| TeckNet EWM01308 | Mouse | BLE (BT5.0) | Fedora 44 (BlueZ 5.86) + Windows 11 | All 6 quirks above | ✅ Working |
+| TeckNet EWM01308 | Mouse | Classic (BT3.0) | Fedora 44 (BlueZ 5.86) + Windows 11 | None (standard link key) | ✅ Working |
+
+**Adapter**: MediaTek MT7921 (built-in laptop adapter, `C0:35:32:AC:13:4A`)
+
+If you test with other hardware, please report your results.
 
 ---
 

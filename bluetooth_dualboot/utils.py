@@ -18,10 +18,10 @@ def mac_to_windows_key(mac: str) -> str:
 
 
 def reverse_hex_key(hex_key: str) -> bytes:
-    """Byte-reverse a hex string key.
+    """Byte-reverse a hex string key and return raw bytes.
 
-    Linux stores BLE keys big-endian; Windows stores them little-endian.
-    Reversing converts between the two representations.
+    Used by the matching logic to compare a Linux IRK (hex string) against
+    a Windows IRK (raw bytes stored in opposite byte order in the registry).
     """
     raw = bytes.fromhex(hex_key)
     return bytes(reversed(raw))

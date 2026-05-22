@@ -169,9 +169,9 @@ def patch_ble_info_file(
 ) -> None:
     """Overwrite BLE key sections in an existing BlueZ info file.
 
-    Used for Windows→Linux BLE sync: the Windows keys are byte-reversed and
-    written into the Linux info file so that both OSes share the same keys
-    (with the Windows pairing as the canonical source).
+    Used for Windows→Linux BLE sync: the Windows keys (hex-encoded, same byte
+    order) are written into the Linux info file so that both OSes share the
+    same keys (with the Windows pairing as the canonical source).
 
     Preserves [General], [DeviceID], [ConnectionParameters] and any other
     non-key sections unchanged.

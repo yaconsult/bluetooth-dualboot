@@ -94,6 +94,11 @@ def _find_hive(windows_mount: str | None, verbose: bool) -> Path:
     sys.exit(1)
 
 
+def _win_key_to_mac(win_key: str) -> str:
+    """Convert a Windows device_key (lowercase no-sep hex) to colon-separated MAC."""
+    return ":".join(win_key[i : i + 2].upper() for i in range(0, 12, 2))
+
+
 def _mac_candidates(mac: str) -> tuple[str, str]:
     """Return (normal, reversed) lowercase no-sep MAC strings for matching."""
     normal = mac_to_windows_key(mac)
@@ -112,6 +117,8 @@ def _find_ble_win_entry(lk: BLEKeys, win_ble: list[WindowsBLEEntry]) -> WindowsB
        it so Windows can actually use the updated keys.
     3. IRK match on any entry — fallback if BTHLE enum is absent or stale.
     4. MAC match (normal and byte-reversed) — fallback for public-address devices.
+    5. Device name match on the sole active entry — fallback for devices that
+       generate a new IRK per pairing (address and IRK both change).
     """
     linux_irk = reverse_hex_key(lk.irk) if lk.irk else None
     normal, reversed_ = _mac_candidates(lk.device_mac)
@@ -132,7 +139,36 @@ def _find_ble_win_entry(lk: BLEKeys, win_ble: list[WindowsBLEEntry]) -> WindowsB
     # the last Linux sync). Patch it instead.
     if irk_match is not None and len(active_entries) == 1:
         return active_entries[0]
-    return irk_match or mac_match
+    if irk_match or mac_match:
+        return irk_match or mac_match
+
+    # Name-based fallback: some BLE devices generate a new IRK and static random
+    # address per pairing, so neither IRK nor MAC will match.  If there is
+    # exactly one active Windows BLE entry we can try matching by device name.
+    if lk.device_name and len(active_entries) == 1:
+        we = active_entries[0]
+        win_mac = _win_key_to_mac(we.device_key)
+        win_name = _device_name_from_cache(lk.adapter_mac, win_mac)
+        if win_name and win_name == lk.device_name:
+            return we
+    return None
+
+
+def _device_name_from_cache(adapter_mac: str, device_mac: str) -> str | None:
+    """Try to read a device name from the BlueZ cache directory.
+
+    BlueZ stores cached names in /var/lib/bluetooth/<adapter>/cache/<device>.
+    Returns None if the cache entry doesn't exist.
+    """
+    cache_file = Path("/var/lib/bluetooth") / adapter_mac / "cache" / device_mac
+    if not cache_file.exists():
+        return None
+    try:
+        parser = __import__("configparser").ConfigParser()
+        parser.read(str(cache_file))
+        return parser.get("General", "Name", fallback=None)
+    except Exception:
+        return None
 
 
 def _find_classic_win_entry(
@@ -153,8 +189,13 @@ def _adapter_win_key(adapter_mac: str, win_ble: list[WindowsBLEEntry]) -> str:
 
 
 def _win_key_to_linux_hex(win_bytes: bytes) -> str:
-    """Byte-reverse a Windows key (little-endian) to Linux hex (big-endian, uppercase)."""
-    return bytes(reversed(win_bytes)).hex().upper()
+    """Convert a Windows registry key (raw bytes) to Linux hex (uppercase).
+
+    Despite earlier assumptions, BLE keys are stored in the same byte order
+    in both Windows and Linux — no reversal is needed.  The raw bytes from
+    the Windows registry are the same bytes BlueZ writes into info files.
+    """
+    return win_bytes.hex().upper()
 
 
 def _sync_ble(
@@ -170,21 +211,32 @@ def _sync_ble(
     Windows and Linux have different adapter IRKs, the device only recognises
     one host. By copying the Windows keys into Linux, both OSes present the
     same keys and the device (bonded to Windows) works in both.
+
+    When the Windows device address differs from the Linux device address
+    (common for BLE devices that generate a new static random address per
+    pairing), the Linux device directory is renamed to the Windows address.
     """
     if we is None:
         print(f"  [{lk.device_name}] No matching Windows BLE entry found — skipping.")
         print("    Hint: pair this device in Windows first, then run bt-sync.")
         return False
 
-    # Convert Windows keys (little-endian bytes) → Linux format (big-endian hex)
+    # Convert Windows keys to Linux hex format (same byte order, just hex encode)
     win_ltk = _win_key_to_linux_hex(we.ltk) if we.ltk else ""
     win_irk = _win_key_to_linux_hex(we.irk) if we.irk else ""
     win_csrk_local = _win_key_to_linux_hex(we.csrk_outbound) if we.csrk_outbound else ""
     win_csrk_remote = _win_key_to_linux_hex(we.csrk_inbound) if we.csrk_inbound else ""
 
+    # The Windows device address may differ from Linux's (BLE devices use a new
+    # static random address per pairing).  Detect this so we can relocate the
+    # Linux device directory later.
+    win_device_mac = _win_key_to_mac(we.device_key)
+    address_changed = win_device_mac != lk.device_mac
+
     # Check if update is needed
     needs_update = (
-        (win_ltk and win_ltk != lk.ltk)
+        address_changed
+        or (win_ltk and win_ltk != lk.ltk)
         or (win_irk and win_irk != lk.irk)
         or (win_csrk_local and win_csrk_local != lk.csrk_local)
         or (win_csrk_remote and win_csrk_remote != lk.csrk_remote)
@@ -198,6 +250,8 @@ def _sync_ble(
 
     if verbose or dry_run:
         print("    Action: PATCH Linux info file with Windows keys")
+        if address_changed:
+            print(f"    Address: {lk.device_mac} → {win_device_mac}")
         if win_ltk and win_ltk != lk.ltk:
             print(f"    LTK:  {lk.ltk} → {win_ltk}")
         if win_irk and win_irk != lk.irk:
@@ -215,13 +269,30 @@ def _sync_ble(
         print(f"  [{lk.device_name}] DRY RUN — would patch Linux info file.")
         return True
 
-    info_path = bluez_dir / lk.adapter_mac / lk.device_mac / "info"
+    # If the device address changed, relocate the device directory
+    adapter_dir = bluez_dir / lk.adapter_mac
+    if address_changed:
+        old_dir = adapter_dir / lk.device_mac
+        new_dir = adapter_dir / win_device_mac
+        if new_dir.exists():
+            shutil.rmtree(new_dir)
+        old_dir.rename(new_dir)
+        print(f"  [{lk.device_name}] Renamed device dir: {lk.device_mac} → {win_device_mac}")
+        info_path = new_dir / "info"
+    else:
+        info_path = adapter_dir / lk.device_mac / "info"
+
+    # BLE uses a single LTK for both central and peripheral roles.
+    # Patch PeripheralLongTermKey and SlaveLongTermKey with the same LTK.
     patch_ble_info_file(
         info_path=info_path,
         ltk=win_ltk,
         ltk_rand=we.erand,
         ltk_ediv=we.ediv,
         irk=win_irk,
+        peripheral_ltk=win_ltk,
+        peripheral_ltk_rand=we.erand,
+        peripheral_ltk_ediv=we.ediv,
         csrk_local=win_csrk_local,
         csrk_remote=win_csrk_remote,
     )

@@ -529,8 +529,148 @@ Every working dual-boot BLE guide copies keys **Windows → Linux**, not the rev
 
 ### Remaining
 
-- [ ] Pair mouse in Windows (fresh pairing)
-- [ ] Boot Linux, run `sudo uv run bt-sync` to copy Windows keys to Linux
-- [ ] Run `sudo systemctl restart bluetooth`
-- [ ] Verify mouse works in Linux
+- [x] Pair mouse in Windows (fresh pairing)
+- [x] Boot Linux, run `sudo uv run bt-sync` to copy Windows keys to Linux
+- [x] Run `sudo systemctl restart bluetooth`
+- [x] Verify mouse works in Linux — **confirmed working (Session 9)**
 - [ ] Reboot into Windows — verify mouse still works
+
+---
+
+## Session 9 — BLE Key Byte Order Fix + Address Handling (2026-05-22)
+
+### Problem
+
+After Session 8's BLE sync direction reversal (Windows → Linux), the mouse
+**still** did not connect in Linux.  `bluetoothctl connect` failed with
+`le-connection-abort-by-local`.  The mouse was completely invisible to Linux
+BLE scans — the controller never saw any advertisements from it.
+
+### Investigation (multi-hour debugging session)
+
+1. **btmon analysis**: `systemctl restart bluetooth` correctly loaded the IRK
+   into the HCI resolving list.  But `bluetoothctl connect` timed out with no
+   LE connection events at all — the controller was scanning with an accept-list
+   filter and never saw the mouse.
+
+2. **Privacy mode experiment**: Enabled `Privacy = device` in
+   `/etc/bluetooth/main.conf` and set the adapter's local IRK to Windows'
+   `CentralIRK` in the identity file.  The theory was that the mouse does
+   directed advertising to Windows' RPA and Linux needs the same adapter
+   identity.  This loaded the local IRK correctly but the mouse was still
+   invisible.
+
+3. **Address mismatch discovery**: The mouse uses a **static random address**
+   that changes each time it pairs with a new host.  After pairing in Windows
+   the mouse's address changed from `F2:E8:D8:09:66:57` (Linux pairing) to
+   `D0:77:4E:9F:D9:83` (Windows pairing).  Linux was scanning for the wrong
+   address entirely.
+
+4. **Created device directory at Windows address**: Created a new BlueZ device
+   directory at `D0:77:4E:9F:D9:83` with the Windows keys.  `bluetoothctl
+   connect D0:77:4E:9F:D9:83` now found the mouse (`Connected: yes`) but
+   immediately disconnected: **MIC Failure (0x3d)** — the LTK was wrong.
+
+5. **Byte order revelation**: The LTK we wrote was byte-reversed
+   (`B4A60306CD72FC0D2B020BCC84701A44`), but the controller sent it as-is to
+   the mouse.  The mouse expected the original Windows bytes
+   (`441A7084CC0B022B0DFC72CD0603A6B4`).  **Wrote the raw Windows LTK without
+   reversing → connection succeeded, mouse works.**
+
+### Root Cause: Three Bugs
+
+1. **BLE keys do NOT need byte reversal**.  The long-standing assumption that
+   "Windows stores keys little-endian, Linux stores big-endian" was wrong for
+   BLE keys.  Both stores use the same byte order — the raw bytes as exchanged
+   over the air during SMP pairing.  Classic BR/EDR link keys are also stored
+   as-is (no reversal needed either, as was already the case).
+
+2. **Device address changes per pairing**.  BLE devices with static random
+   addresses generate a new address each time they pair.  After pairing in
+   Windows the mouse's address is different from what Linux knows.  The Linux
+   device directory must be **renamed** to the Windows address.
+
+3. **PeripheralLongTermKey must match LongTermKey**.  For a mouse (HID
+   peripheral), BlueZ uses the `[PeripheralLongTermKey]` section for
+   encryption when the mouse initiates reconnection.  If this section retains
+   old Linux keys while `[LongTermKey]` has the Windows keys, encryption
+   fails.  Both sections must have the same Windows LTK, EDiv, and Rand.
+
+### Additional Finding: IRK Matching Failure
+
+The mouse generates a **new IRK** every time it pairs.  The previous matching
+logic compared the Linux IRK (byte-reversed) against Windows entries — this
+never matched because the IRK from the Linux pairing is completely different
+from the IRK from the Windows pairing.
+
+Added a **name-based fallback**: when IRK and MAC matching both fail, if there
+is exactly one active Windows BLE entry whose cached name matches the Linux
+device name, use it.
+
+### Changes
+
+- **`sync.py`**:
+  - `_win_key_to_linux_hex()`: removed byte reversal — now just hex-encodes
+    the raw Windows bytes
+  - `_sync_ble()`: detects address changes (Windows MAC ≠ Linux MAC) and
+    renames the Linux device directory; passes the same LTK to both
+    `[LongTermKey]` and `[PeripheralLongTermKey]`
+  - `_win_key_to_mac()`: new helper to convert Windows device_key to
+    colon-separated MAC
+  - `_find_ble_win_entry()`: added name-based fallback matching (priority 5)
+  - `_device_name_from_cache()`: new helper to read device name from BlueZ
+    cache
+
+- **`linux_bt.py`**: updated `patch_ble_info_file` docstring (no longer
+  mentions byte reversal)
+
+- **`utils.py`**: updated `reverse_hex_key` docstring (only used for IRK
+  matching comparison, not key conversion)
+
+- **Tests** (35 total, 9 new):
+  - `test_patch_ble_info_file_updates_peripheral_and_slave_ltk`
+  - `test_name_fallback_matches_sole_active_entry`
+  - `test_name_fallback_skips_when_name_differs`
+  - `test_name_fallback_skips_when_multiple_active`
+  - `test_win_key_to_mac`
+  - `test_sync_ble_renames_device_dir_when_address_changes`
+  - `test_sync_ble_writes_peripheral_ltk`
+  - `test_sync_ble_no_byte_reversal`
+  - `test_sync_ble_dry_run_does_not_rename`
+
+- **README.md**: added detailed "BLE Quirks" section documenting the
+  hardware/software difficulties and step-by-step instructions
+
+### Test Results
+
+35 tests passing.  Linting and formatting clean.
+
+### Hardware / Software Details
+
+- **Mouse**: TeckNet EWM01308 (BT5.0 + BT3.0 dual-protocol)
+- **Adapter**: MediaTek MT7921 (built-in, MAC `C0:35:32:AC:13:4A`)
+- **Linux**: Fedora 44, BlueZ 5.86, kernel 6.x
+- **Windows**: Windows 11
+
+### What Made This So Difficult
+
+This mouse has a particularly hostile combination of BLE behaviours:
+
+1. **New static random address per pairing** — most guides assume the device
+   keeps the same MAC across pairings.  This mouse doesn't.
+2. **New IRK per pairing** — most guides assume IRK can be used to match a
+   device across OSes.  This mouse generates a fresh IRK every time.
+3. **Directed advertising only** — after bonding, the mouse only advertises
+   to the host it last paired with.  It's completely invisible to other hosts.
+4. **Same LTK for both roles** — the mouse reuses the same LTK for both
+   central and peripheral roles, but BlueZ stores them separately.  If they
+   don't match, encryption fails with MIC Failure.
+5. **No byte reversal** — contrary to widespread documentation and other
+   dual-boot tools, the keys do NOT need byte reversal between Windows and
+   Linux for this device.  The MIC Failure from reversed keys is identical
+   in symptom to a wrong key, making it hard to distinguish from other issues.
+6. **BT3.0-first dual advertising** — when the pairing button is pressed, the
+   mouse advertises Classic BR/EDR ("BT3.0 Mouse") first for several seconds,
+   then switches to BLE ("BT5.0 Mouse").  There is no physical switch.  If you
+   pair BT3.0 by mistake, the keys are Classic link keys and incompatible with
+   the BLE pairing on the other OS.

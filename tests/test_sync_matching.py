@@ -1,7 +1,10 @@
-"""Tests for _find_ble_win_entry matching logic, including is_active preference."""
+"""Tests for BLE matching logic and _sync_ble behaviour."""
+
+from pathlib import Path
+from unittest.mock import patch
 
 from bluetooth_dualboot.linux_bt import BLEKeys
-from bluetooth_dualboot.sync import _find_ble_win_entry
+from bluetooth_dualboot.sync import _find_ble_win_entry, _sync_ble, _win_key_to_mac
 from bluetooth_dualboot.windows_bt import WindowsBLEEntry
 
 
@@ -121,3 +124,181 @@ def test_returns_none_when_no_match():
 
     result = _find_ble_win_entry(lk, [unrelated])
     assert result is None
+
+
+def test_name_fallback_matches_sole_active_entry():
+    """When IRK and MAC both fail, match by device name on the sole active entry."""
+    lk = _make_ble_keys("F2:E8:D8:09:66:57", "CB1E599082F4578B29040F3BD1DB4DC3")
+    # Different IRK and MAC — no IRK/MAC match possible
+    active = _make_win_entry("d0774e9fd983", b"\x99" * 16, is_active=True)
+
+    with patch(
+        "bluetooth_dualboot.sync._device_name_from_cache",
+        return_value="Test Mouse",
+    ):
+        result = _find_ble_win_entry(lk, [active])
+    assert result is active
+
+
+def test_name_fallback_skips_when_name_differs():
+    """Name fallback should NOT match if the device names differ."""
+    lk = _make_ble_keys("F2:E8:D8:09:66:57", "CB1E599082F4578B29040F3BD1DB4DC3")
+    active = _make_win_entry("d0774e9fd983", b"\x99" * 16, is_active=True)
+
+    with patch(
+        "bluetooth_dualboot.sync._device_name_from_cache",
+        return_value="Other Device",
+    ):
+        result = _find_ble_win_entry(lk, [active])
+    assert result is None
+
+
+def test_name_fallback_skips_when_multiple_active():
+    """Name fallback should NOT match if there are multiple active entries."""
+    lk = _make_ble_keys("F2:E8:D8:09:66:57", "CB1E599082F4578B29040F3BD1DB4DC3")
+    active1 = _make_win_entry("d0774e9fd983", b"\x99" * 16, is_active=True)
+    active2 = _make_win_entry("aabbccddeeff", b"\x88" * 16, is_active=True)
+
+    with patch(
+        "bluetooth_dualboot.sync._device_name_from_cache",
+        return_value="Test Mouse",
+    ):
+        result = _find_ble_win_entry(lk, [active1, active2])
+    assert result is None
+
+
+def test_win_key_to_mac():
+    assert _win_key_to_mac("d0774e9fd983") == "D0:77:4E:9F:D9:83"
+    assert _win_key_to_mac("fa7388ba3bfb") == "FA:73:88:BA:3B:FB"
+    assert _win_key_to_mac("c03532ac134a") == "C0:35:32:AC:13:4A"
+
+
+# --- _sync_ble tests ---
+
+_BLE_INFO_TEMPLATE = """\
+[General]
+Name=BT5.0 Mouse
+Appearance=0x03c2
+AddressType=static
+SupportedTechnologies=LE;
+Trusted=true
+Blocked=false
+
+[IdentityResolvingKey]
+Key=OLDIRK00000000000000000000000000
+
+[LongTermKey]
+Key=OLDLTK00000000000000000000000000
+Authenticated=0
+EncSize=16
+EDiv=0
+Rand=0
+
+[PeripheralLongTermKey]
+Key=OLDPLTK0000000000000000000000000
+Authenticated=0
+EncSize=16
+EDiv=0
+Rand=0
+"""
+
+
+def _setup_bluez(tmp_path: Path, adapter: str, device: str) -> Path:
+    """Create a minimal BlueZ directory with a device info file."""
+    device_dir = tmp_path / adapter / device
+    device_dir.mkdir(parents=True)
+    (device_dir / "info").write_text(_BLE_INFO_TEMPLATE)
+    return tmp_path
+
+
+def test_sync_ble_renames_device_dir_when_address_changes(tmp_path):
+    """_sync_ble should rename the device directory to the Windows address."""
+    adapter = "C0:35:32:AC:13:4A"
+    old_mac = "F2:E8:D8:09:66:57"
+    win_mac = "D0:77:4E:9F:D9:83"
+    bluez_dir = _setup_bluez(tmp_path, adapter, old_mac)
+
+    lk = _make_ble_keys(old_mac, "OLDIRK00000000000000000000000000")
+    we = _make_win_entry("d0774e9fd983", b"\xaa" * 16, is_active=True)
+
+    changed = _sync_ble(lk, we, bluez_dir, dry_run=False, verbose=False)
+
+    assert changed is True
+    # Old directory should be gone, new one should exist
+    assert not (bluez_dir / adapter / old_mac).exists()
+    assert (bluez_dir / adapter / win_mac / "info").exists()
+
+
+def test_sync_ble_writes_peripheral_ltk(tmp_path):
+    """_sync_ble should write PeripheralLongTermKey with the same LTK values."""
+    import configparser
+
+    adapter = "C0:35:32:AC:13:4A"
+    device = "FA:73:88:BA:3B:FB"
+    bluez_dir = _setup_bluez(tmp_path, adapter, device)
+
+    lk = _make_ble_keys(device, "OLDIRK00000000000000000000000000")
+    we = _make_win_entry("fa7388ba3bfb", b"\xbb" * 16, is_active=True)
+
+    _sync_ble(lk, we, bluez_dir, dry_run=False, verbose=False)
+
+    parser = configparser.ConfigParser()
+    parser.read(str(bluez_dir / adapter / device / "info"))
+    # LTK and PeripheralLTK should have the same key
+    assert parser["LongTermKey"]["key"] == parser["PeripheralLongTermKey"]["key"]
+    assert parser["LongTermKey"]["ediv"] == parser["PeripheralLongTermKey"]["ediv"]
+    assert parser["LongTermKey"]["rand"] == parser["PeripheralLongTermKey"]["rand"]
+
+
+def test_sync_ble_no_byte_reversal(tmp_path):
+    """_sync_ble should write Windows keys as-is (no byte reversal)."""
+    adapter = "C0:35:32:AC:13:4A"
+    device = "FA:73:88:BA:3B:FB"
+    bluez_dir = _setup_bluez(tmp_path, adapter, device)
+
+    lk = _make_ble_keys(device, "OLDIRK00000000000000000000000000")
+    raw_ltk = bytes.fromhex("441A7084CC0B022B0DFC72CD0603A6B4")
+    we = _make_win_entry("fa7388ba3bfb", b"\xcc" * 16, is_active=True)
+    # Override LTK on the entry
+    we = WindowsBLEEntry(
+        adapter_key=we.adapter_key,
+        device_key=we.device_key,
+        ltk=raw_ltk,
+        irk=we.irk,
+        key_length=we.key_length,
+        erand=we.erand,
+        ediv=we.ediv,
+        csrk_inbound=we.csrk_inbound,
+        csrk_outbound=we.csrk_outbound,
+        inbound_sign_counter=we.inbound_sign_counter,
+        outbound_sign_counter=we.outbound_sign_counter,
+        address=we.address,
+        address_type=we.address_type,
+        auth_req=we.auth_req,
+        is_active=we.is_active,
+    )
+
+    _sync_ble(lk, we, bluez_dir, dry_run=False, verbose=False)
+
+    from bluetooth_dualboot.linux_bt import read_ble_keys
+
+    keys = read_ble_keys(bluez_dir / adapter / device / "info", adapter, device)
+    assert keys is not None
+    # Should be hex-encoded as-is, NOT reversed
+    assert keys.ltk == "441A7084CC0B022B0DFC72CD0603A6B4"
+
+
+def test_sync_ble_dry_run_does_not_rename(tmp_path):
+    """_sync_ble in dry_run mode should NOT rename directories or modify files."""
+    adapter = "C0:35:32:AC:13:4A"
+    old_mac = "F2:E8:D8:09:66:57"
+    bluez_dir = _setup_bluez(tmp_path, adapter, old_mac)
+
+    lk = _make_ble_keys(old_mac, "OLDIRK00000000000000000000000000")
+    we = _make_win_entry("d0774e9fd983", b"\xaa" * 16, is_active=True)
+
+    changed = _sync_ble(lk, we, bluez_dir, dry_run=True, verbose=False)
+
+    assert changed is True
+    # Old directory should still exist (dry run)
+    assert (bluez_dir / adapter / old_mac / "info").exists()
