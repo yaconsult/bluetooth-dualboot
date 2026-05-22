@@ -1,8 +1,8 @@
 # bluetooth-dualboot
 
-Sync Bluetooth pairing keys from Linux into the Windows registry so every paired
-Bluetooth device (mice, keyboards, headphones, etc.) works in **both Fedora Linux
-and Windows 11** without re-pairing when you switch OS from GRUB.
+Sync Bluetooth pairing keys between Linux and Windows so every paired Bluetooth
+device (mice, keyboards, headphones, etc.) works in **both Fedora Linux and
+Windows 11** without re-pairing when you switch OS from GRUB.
 
 Supports **BLE (Bluetooth Low Energy)** and **Classic BR/EDR** devices.
 
@@ -10,18 +10,23 @@ Supports **BLE (Bluetooth Low Energy)** and **Classic BR/EDR** devices.
 
 ## The Problem
 
-When you pair a Bluetooth device in Linux, Linux generates and stores cryptographic
-keys. When you pair the same device in Windows, Windows generates *different* keys
-and overwrites the device's stored keys — breaking Linux's connection (and vice versa).
+When you pair a Bluetooth device in one OS, that OS generates unique cryptographic
+keys. Pairing the same device in the other OS generates *different* keys and
+overwrites the device's stored bond — breaking the first OS's connection.
 
 Every re-pair breaks the other OS.
 
 ## The Solution
 
-Pair each device **once in Linux**. This tool reads Linux's pairing keys and injects
-them into the Windows registry (while the Windows partition is mounted but not booted).
-Both OSes then share the same keys, so every device connects automatically regardless
-of which OS you boot.
+Pair each device in **both OSes**, then run `bt-sync` to unify the keys:
+
+- **BLE devices**: pair in Windows **last**. `bt-sync` copies Windows' keys into
+  Linux's BlueZ config. This is necessary because BLE devices store the host's
+  identity (adapter IRK) — the mouse must remember Windows' identity, and Linux
+  adopts it.
+- **Classic BR/EDR devices**: pair in Linux **last** (or either order). `bt-sync`
+  copies Linux's link key into the Windows registry. Classic link keys are symmetric
+  so either direction works.
 
 ---
 
@@ -67,9 +72,10 @@ are modified.
 
 ## Usage
 
-### 1. Pair all your Bluetooth devices in Linux first
+### 1. Pair your Bluetooth devices in both OSes
 
-Make sure every device you want to use in both OSes is paired and working in Linux.
+- **BLE devices**: pair in Linux first, then in **Windows** (Windows must be last)
+- **Classic devices**: pair in Windows first, then in **Linux** (or either order)
 
 ### 2. Mount the Windows partition (if not auto-mounted)
 
@@ -90,9 +96,18 @@ sudo uv run bt-sync --dry-run --verbose
 sudo uv run bt-sync
 ```
 
-### 5. Boot into Windows
+### 5. Restart Bluetooth (for BLE devices)
 
-Your Bluetooth devices should connect automatically. No re-pairing needed.
+```bash
+sudo systemctl restart bluetooth
+```
+
+BLE devices should reconnect immediately in Linux.
+
+### 6. Verify in both OSes
+
+Reboot into Windows — your Bluetooth devices should connect automatically.
+No re-pairing needed.
 
 ---
 
@@ -117,39 +132,41 @@ Options:
 
 ### BLE devices (most modern mice, keyboards)
 
-Linux (BlueZ) and Windows store BLE keys with **opposite byte order**
-(big-endian vs little-endian). The tool:
+BLE sync direction: **Windows → Linux**.
 
-1. Reads `LTK`, `IRK`, and `CSRK` from `/var/lib/bluetooth/<adapter>/<device>/info`
-2. Byte-reverses each key to Windows format
-3. Matches the Linux device to its Windows registry entry using this priority:
-   - **IRK match on the active entry** (present in `ControlSet001\Enum\BTHLE`) — Windows is currently using this entry
-   - **IRK match on inactive entry + single active entry** — Windows re-paired independently; patch the active entry
+BLE devices store the host's adapter IRK during pairing. Since Linux and Windows
+have different adapter IRKs, the device only recognises one host. By pairing in
+Windows last and copying those keys into Linux, the device recognises both OSes
+(both present Windows' identity).
+
+The tool:
+
+1. Reads the Windows BLE entry from the registry (`LTK`, `IRK`, `CSRK`, `EDIV`, `ERand`)
+2. Matches it to the corresponding Linux device using:
+   - **IRK match on the active entry** (present in `ControlSet001\Enum\BTHLE`)
+   - **IRK match on inactive entry + single active entry** — fallback
    - **IRK match on any entry** — fallback when BTHLE enum is absent
    - **MAC match** — final fallback for public-address devices
-4. If a match is found → patches the existing entry in-place
-5. If no match → creates a new registry subkey via `reged`
+3. Byte-reverses each Windows key to Linux format (little-endian → big-endian)
+4. Writes the keys into `/var/lib/bluetooth/<adapter>/<device>/info`
+5. After sync, `systemctl restart bluetooth` loads the new keys
 
-`AuthReq` (pairing security flags) is derived from the Linux pairing data — not hardcoded.
+#### Why Windows → Linux, not the reverse?
 
-#### Why IRK matching, not MAC?
+BLE bonds are **asymmetric** — the device stores the host's identity (adapter IRK)
+and only accepts connections from that specific host. Windows and Linux have
+different adapter IRKs. Copying Linux keys into Windows doesn't work because the
+device (bonded to Linux) rejects Windows' host identity.
 
-Many BLE devices use **Resolvable Private Addresses (RPA)** — the MAC address they
-advertise changes every ~15 minutes. Windows pairs the device under whatever RPA it
-saw at pairing time. Linux pairs it under the stable **identity address** (via the IRK).
-These two MACs are different, so MAC-based matching would fail to link them.
-
-The IRK (Identity Resolving Key) is the same on both sides and is the correct stable
-identifier. The tool byte-reverses the Linux IRK to Windows format before comparing.
-
-When an existing Windows entry is matched via IRK, the tool also corrects `AddressType`
-if it differs — Windows may have recorded the wrong address type (e.g. `0` = public)
-when it first paired the device via an RPA. The correct value (`1` = static random) is
-taken from Linux's pairing data.
+By pairing Windows last, the device stores Windows' host identity. Linux then
+adopts Windows' keys, so both OSes present the same identity to the device.
 
 ### Classic BR/EDR devices (older mice, some headsets)
 
-Link keys do **not** need byte-reversal. The tool patches or creates the value directly
+Classic sync direction: **Linux → Windows**.
+
+Classic link keys are symmetric — either side can reconnect using the same key.
+No byte-reversal is needed. The tool patches or creates the value directly
 on the adapter registry key.
 
 ### Registry location
@@ -202,22 +219,27 @@ sudo rm /mnt/windows/Windows/System32/config/SYSTEM.bt-sync-backup-*
 
 ## Re-running After Re-pairing
 
-If you re-pair a device in Linux (e.g. after a factory reset), just run `bt-sync` again.
-It detects key mismatches and updates Windows automatically.
+If you re-pair a BLE device, always re-pair in **Windows last**, then run `bt-sync`.
+For Classic devices, re-pair in Linux and run `bt-sync` to update Windows.
 
 ---
 
 ## Troubleshooting
 
-### Device shows as "not connected" or "not paired" in Windows after sync
+### BLE device shows "not connected" in one OS after sync
 
-The most reliable fix is to start fresh:
+1. Ensure you paired in the correct order: **Windows last** for BLE devices
+2. Run `sudo uv run bt-sync` from Linux (Windows partition mounted)
+3. Run `sudo systemctl restart bluetooth`
+4. Verify the device works in Linux
+5. Reboot into Windows — it should connect automatically
 
-1. In Windows Bluetooth settings, **Remove device**
-2. **Re-pair** the device in Windows (confirm it works)
-3. Boot Linux, **re-pair** the device in Linux
-4. Run `sudo uv run bt-sync`
-5. Boot Windows — the device should connect automatically
+If the device still fails, start fresh:
+
+1. Remove the device in **both** OSes
+2. Pair in Linux first, then in Windows
+3. Boot Linux, run `sudo uv run bt-sync`
+4. Run `sudo systemctl restart bluetooth`
 
 ### Mouse/keyboard has both BT3.0 and BT5.0 modes
 

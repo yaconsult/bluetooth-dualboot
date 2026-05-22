@@ -155,6 +155,122 @@ def read_classic_keys(info_path: Path, adapter_mac: str, device_mac: str) -> Cla
     return keys
 
 
+def patch_ble_info_file(
+    info_path: Path,
+    ltk: str,
+    ltk_rand: int,
+    ltk_ediv: int,
+    irk: str,
+    peripheral_ltk: str = "",
+    peripheral_ltk_rand: int = 0,
+    peripheral_ltk_ediv: int = 0,
+    csrk_local: str = "",
+    csrk_remote: str = "",
+) -> None:
+    """Overwrite BLE key sections in an existing BlueZ info file.
+
+    Used for Windows→Linux BLE sync: the Windows keys are byte-reversed and
+    written into the Linux info file so that both OSes share the same keys
+    (with the Windows pairing as the canonical source).
+
+    Preserves [General], [DeviceID], [ConnectionParameters] and any other
+    non-key sections unchanged.
+    """
+    parser = _read_info_file(info_path)
+
+    # Update LongTermKey section
+    if "LongTermKey" not in parser:
+        parser.add_section("LongTermKey")
+    parser.set("LongTermKey", "Key", ltk)
+    parser.set("LongTermKey", "Authenticated", "0")
+    parser.set("LongTermKey", "EncSize", "16")
+    parser.set("LongTermKey", "EDiv", str(ltk_ediv))
+    parser.set("LongTermKey", "Rand", str(ltk_rand))
+
+    # Update PeripheralLongTermKey and SlaveLongTermKey if we have peripheral keys
+    if peripheral_ltk:
+        for section in ("PeripheralLongTermKey", "SlaveLongTermKey"):
+            if section not in parser:
+                parser.add_section(section)
+            parser.set(section, "Key", peripheral_ltk)
+            parser.set(section, "Authenticated", "0")
+            parser.set(section, "EncSize", "16")
+            parser.set(section, "EDiv", str(peripheral_ltk_ediv))
+            parser.set(section, "Rand", str(peripheral_ltk_rand))
+
+    # Update IRK
+    if irk:
+        if "IdentityResolvingKey" not in parser:
+            parser.add_section("IdentityResolvingKey")
+        parser.set("IdentityResolvingKey", "Key", irk)
+
+    # Update CSRK sections
+    if csrk_local:
+        if "LocalSignatureKey" not in parser:
+            parser.add_section("LocalSignatureKey")
+        parser.set("LocalSignatureKey", "Key", csrk_local)
+        parser.set("LocalSignatureKey", "Counter", "0")
+        parser.set("LocalSignatureKey", "Authenticated", "false")
+
+    if csrk_remote:
+        if "RemoteSignatureKey" not in parser:
+            parser.add_section("RemoteSignatureKey")
+        parser.set("RemoteSignatureKey", "Key", csrk_remote)
+        parser.set("RemoteSignatureKey", "Counter", "0")
+        parser.set("RemoteSignatureKey", "Authenticated", "false")
+
+    # Write back — configparser lowercases keys by default, so we do it manually
+    _write_info_file(info_path, parser)
+
+
+def _write_info_file(info_path: Path, parser: configparser.ConfigParser) -> None:
+    """Write a BlueZ info file preserving the exact key casing BlueZ expects.
+
+    configparser lowercases option names by default, so we write manually
+    to preserve correct casing (e.g. 'Key', 'EDiv', 'EncSize').
+    """
+    lines: list[str] = []
+    for section in parser.sections():
+        lines.append(f"[{section}]")
+        for key, value in parser.items(section):
+            # Restore BlueZ-expected casing for known keys
+            cased_key = _BLUEZ_KEY_CASING.get(key, key)
+            lines.append(f"{cased_key}={value}")
+        lines.append("")
+    info_path.write_text("\n".join(lines))
+
+
+# BlueZ expects specific casing for info file keys
+_BLUEZ_KEY_CASING: dict[str, str] = {
+    "name": "Name",
+    "appearance": "Appearance",
+    "addresstype": "AddressType",
+    "supportedtechnologies": "SupportedTechnologies",
+    "trusted": "Trusted",
+    "blocked": "Blocked",
+    "cablepairing": "CablePairing",
+    "wakeallowed": "WakeAllowed",
+    "services": "Services",
+    "key": "Key",
+    "authenticated": "Authenticated",
+    "encsize": "EncSize",
+    "ediv": "EDiv",
+    "rand": "Rand",
+    "counter": "Counter",
+    "type": "Type",
+    "pinlength": "PINLength",
+    "source": "Source",
+    "vendor": "Vendor",
+    "product": "Product",
+    "version": "Version",
+    "mininterval": "MinInterval",
+    "maxinterval": "MaxInterval",
+    "latency": "Latency",
+    "timeout": "Timeout",
+    "class": "Class",
+}
+
+
 def _is_mac_dir(name: str) -> bool:
     """Return True if a directory name looks like a Bluetooth MAC address."""
     return len(name.replace(":", "").replace("-", "")) == 12

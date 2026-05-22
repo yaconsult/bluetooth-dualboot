@@ -1,4 +1,8 @@
-"""CLI entry point: sync all Linux Bluetooth pairing keys into the Windows registry hive."""
+"""CLI entry point: sync Bluetooth pairing keys between Linux and Windows.
+
+BLE devices: Windows → Linux (Windows pairing is canonical; mouse stores Windows host identity).
+Classic BR/EDR: Linux → Windows (symmetric link keys; either direction works).
+"""
 
 from __future__ import annotations
 
@@ -9,7 +13,13 @@ import shutil
 import sys
 from pathlib import Path
 
-from bluetooth_dualboot.linux_bt import AnyDeviceKeys, BLEKeys, ClassicKeys, discover_all_devices
+from bluetooth_dualboot.linux_bt import (
+    AnyDeviceKeys,
+    BLEKeys,
+    ClassicKeys,
+    discover_all_devices,
+    patch_ble_info_file,
+)
 from bluetooth_dualboot.utils import (
     find_ntfs_mounts,
     find_windows_system_hive,
@@ -19,9 +29,7 @@ from bluetooth_dualboot.utils import (
 from bluetooth_dualboot.windows_bt import (
     WindowsBLEEntry,
     WindowsClassicEntry,
-    create_ble_entry,
     create_classic_entry,
-    patch_ble_entry,
     patch_classic_entry,
     read_windows_ble_entries,
     read_windows_classic_entries,
@@ -32,8 +40,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bt-sync",
         description=(
-            "Sync all Linux Bluetooth pairing keys (BLE and Classic) into the Windows "
-            "registry so every paired device works in both OSes without re-pairing."
+            "Sync Bluetooth pairing keys between Linux and Windows so every paired "
+            "device works in both OSes without re-pairing. BLE: Windows→Linux. "
+            "Classic: Linux→Windows."
         ),
     )
     parser.add_argument(
@@ -143,74 +152,44 @@ def _adapter_win_key(adapter_mac: str, win_ble: list[WindowsBLEEntry]) -> str:
     return mac_to_windows_key(adapter_mac)
 
 
-def _mac_to_address_int(mac: str) -> int:
-    """Convert a MAC string to the 64-bit little-endian integer Windows stores as Address."""
-    b = bytes.fromhex(mac_to_windows_key(mac))
-    return int.from_bytes(bytes(reversed(b)), "little")
+def _win_key_to_linux_hex(win_bytes: bytes) -> str:
+    """Byte-reverse a Windows key (little-endian) to Linux hex (big-endian, uppercase)."""
+    return bytes(reversed(win_bytes)).hex().upper()
 
 
 def _sync_ble(
     lk: BLEKeys,
     we: WindowsBLEEntry | None,
-    adapter_win_key: str,
-    hive_path: Path,
+    bluez_dir: Path,
     dry_run: bool,
     verbose: bool,
 ) -> bool:
-    """Sync a BLE device — patch if entry exists, create if not. Returns True if changed."""
-    new_ltk = reverse_hex_key(lk.ltk) if lk.ltk else None
-    new_irk = reverse_hex_key(lk.irk) if lk.irk else None
-    new_csrk_inbound = reverse_hex_key(lk.csrk_local) if lk.csrk_local else None
-    new_csrk_outbound = reverse_hex_key(lk.csrk_remote) if lk.csrk_remote else None
+    """Sync a BLE device: Windows → Linux. Returns True if Linux info file was changed.
 
+    BLE devices store the host's identity (adapter IRK) during pairing. Since
+    Windows and Linux have different adapter IRKs, the device only recognises
+    one host. By copying the Windows keys into Linux, both OSes present the
+    same keys and the device (bonded to Windows) works in both.
+    """
     if we is None:
-        # No existing Windows entry — create from scratch
-        device_win_key = mac_to_windows_key(lk.device_mac)
-        address = _mac_to_address_int(lk.device_mac)
-        address_type = 0 if lk.address_type == "public" else 1
+        print(f"  [{lk.device_name}] No matching Windows BLE entry found — skipping.")
+        print("    Hint: pair this device in Windows first, then run bt-sync.")
+        return False
 
-        if verbose or dry_run:
-            print("    Action: CREATE new Windows BLE entry")
-            if new_ltk:
-                print(f"    LTK:  {new_ltk.hex().upper()}")
-            if new_irk:
-                print(f"    IRK:  {new_irk.hex().upper()}")
+    # Convert Windows keys (little-endian bytes) → Linux format (big-endian hex)
+    win_ltk = _win_key_to_linux_hex(we.ltk) if we.ltk else ""
+    win_irk = _win_key_to_linux_hex(we.irk) if we.irk else ""
+    win_csrk_local = _win_key_to_linux_hex(we.csrk_outbound) if we.csrk_outbound else ""
+    win_csrk_remote = _win_key_to_linux_hex(we.csrk_inbound) if we.csrk_inbound else ""
 
-        if dry_run:
-            print(f"  [{lk.device_name}] DRY RUN — would create new Windows BLE entry.")
-            return True
-
-        create_ble_entry(
-            hive_path=hive_path,
-            adapter_key=adapter_win_key,
-            device_key=device_win_key,
-            ltk=new_ltk or b"\x00" * 16,
-            irk=new_irk or b"\x00" * 16,
-            key_length=lk.ltk_enc_size,
-            erand=lk.ltk_rand,
-            ediv=lk.ltk_ediv,
-            address=address,
-            address_type=address_type,
-            auth_req=lk.auth_req,
-            csrk_inbound=new_csrk_inbound,
-            csrk_outbound=new_csrk_outbound,
-        )
-        print(f"  [{lk.device_name}] Created new Windows BLE entry.")
-        return True
-
-    # Entry exists — check if update is needed
-    linux_address_type = 0 if lk.address_type == "public" else 1
-    address_type_changed = linux_address_type != we.address_type
-    ediv_changed = lk.ltk_ediv != we.ediv
-    erand_changed = lk.ltk_rand != we.erand
+    # Check if update is needed
     needs_update = (
-        (new_ltk and new_ltk != we.ltk)
-        or (new_irk and new_irk != we.irk)
-        or (new_csrk_inbound and we.csrk_inbound and new_csrk_inbound != we.csrk_inbound)
-        or (new_csrk_outbound and we.csrk_outbound and new_csrk_outbound != we.csrk_outbound)
-        or address_type_changed
-        or ediv_changed
-        or erand_changed
+        (win_ltk and win_ltk != lk.ltk)
+        or (win_irk and win_irk != lk.irk)
+        or (win_csrk_local and win_csrk_local != lk.csrk_local)
+        or (win_csrk_remote and win_csrk_remote != lk.csrk_remote)
+        or we.ediv != lk.ltk_ediv
+        or we.erand != lk.ltk_rand
     )
 
     if not needs_update:
@@ -218,45 +197,35 @@ def _sync_ble(
         return False
 
     if verbose or dry_run:
-        print("    Action: PATCH existing Windows BLE entry")
-        if new_ltk and new_ltk != we.ltk:
-            print(f"    LTK:  {we.ltk.hex().upper()} → {new_ltk.hex().upper()}")
-        if new_irk and new_irk != we.irk:
-            print(f"    IRK:  {we.irk.hex().upper()} → {new_irk.hex().upper()}")
-        if new_csrk_inbound and we.csrk_inbound and new_csrk_inbound != we.csrk_inbound:
-            print(
-                f"    CSRK(inbound):  {we.csrk_inbound.hex().upper()} → "
-                f"{new_csrk_inbound.hex().upper()}"
-            )
-        if new_csrk_outbound and we.csrk_outbound and new_csrk_outbound != we.csrk_outbound:
-            print(
-                f"    CSRK(outbound): {we.csrk_outbound.hex().upper()} → "
-                f"{new_csrk_outbound.hex().upper()}"
-            )
-        if address_type_changed:
-            print(f"    AddressType: {we.address_type} → {linux_address_type}")
-        if ediv_changed:
-            print(f"    EDIV: {hex(we.ediv)} → {hex(lk.ltk_ediv)}")
-        if erand_changed:
-            print(f"    ERand: {hex(we.erand)} → {hex(lk.ltk_rand)}")
+        print("    Action: PATCH Linux info file with Windows keys")
+        if win_ltk and win_ltk != lk.ltk:
+            print(f"    LTK:  {lk.ltk} → {win_ltk}")
+        if win_irk and win_irk != lk.irk:
+            print(f"    IRK:  {lk.irk} → {win_irk}")
+        if win_csrk_local and win_csrk_local != lk.csrk_local:
+            print(f"    CSRK(local):  {lk.csrk_local} → {win_csrk_local}")
+        if win_csrk_remote and win_csrk_remote != lk.csrk_remote:
+            print(f"    CSRK(remote): {lk.csrk_remote} → {win_csrk_remote}")
+        if we.ediv != lk.ltk_ediv:
+            print(f"    EDiv: {lk.ltk_ediv} → {we.ediv}")
+        if we.erand != lk.ltk_rand:
+            print(f"    Rand: {lk.ltk_rand} → {we.erand}")
 
     if dry_run:
-        print(f"  [{lk.device_name}] DRY RUN — would patch existing Windows BLE entry.")
+        print(f"  [{lk.device_name}] DRY RUN — would patch Linux info file.")
         return True
 
-    patch_ble_entry(
-        hive_path=hive_path,
-        adapter_key=we.adapter_key,
-        device_key=we.device_key,
-        ltk=new_ltk if new_ltk else we.ltk,
-        irk=new_irk if new_irk else we.irk,
-        csrk_inbound=new_csrk_inbound,
-        csrk_outbound=new_csrk_outbound,
-        address_type=linux_address_type if address_type_changed else None,
-        ediv=lk.ltk_ediv if ediv_changed else None,
-        erand=lk.ltk_rand if erand_changed else None,
+    info_path = bluez_dir / lk.adapter_mac / lk.device_mac / "info"
+    patch_ble_info_file(
+        info_path=info_path,
+        ltk=win_ltk,
+        ltk_rand=we.erand,
+        ltk_ediv=we.ediv,
+        irk=win_irk,
+        csrk_local=win_csrk_local,
+        csrk_remote=win_csrk_remote,
     )
-    print(f"  [{lk.device_name}] BLE keys patched in Windows registry.")
+    print(f"  [{lk.device_name}] Linux BLE keys updated from Windows.")
     return True
 
 
@@ -317,32 +286,15 @@ def _sync_classic(
     return True
 
 
-def _needs_any_write(
-    ble_pairs: list[tuple[BLEKeys, WindowsBLEEntry | None]],
+def _needs_classic_write(
     classic_pairs: list[tuple[ClassicKeys, WindowsClassicEntry | None]],
 ) -> bool:
-    """Return True if at least one device has keys that differ from Windows (or is absent)."""
-    for lk, we in ble_pairs:
-        if we is None:
-            return True
-        new_ltk = reverse_hex_key(lk.ltk) if lk.ltk else None
-        new_irk = reverse_hex_key(lk.irk) if lk.irk else None
-        new_csrk_in = reverse_hex_key(lk.csrk_local) if lk.csrk_local else None
-        new_csrk_out = reverse_hex_key(lk.csrk_remote) if lk.csrk_remote else None
-        if (
-            (new_ltk and new_ltk != we.ltk)
-            or (new_irk and new_irk != we.irk)
-            or (new_csrk_in and we.csrk_inbound and new_csrk_in != we.csrk_inbound)
-            or (new_csrk_out and we.csrk_outbound and new_csrk_out != we.csrk_outbound)
-        ):
-            return True
-
+    """Return True if at least one Classic device needs a Windows registry write."""
     for lk, we in classic_pairs:
         if not lk.link_key:
             continue
         if we is None or we.link_key != bytes.fromhex(lk.link_key):
             return True
-
     return False
 
 
@@ -410,21 +362,24 @@ def main() -> None:
     ble_pairs = [(lk, _find_ble_win_entry(lk, win_ble)) for lk in ble_devices]
     classic_pairs = [(lk, _find_classic_win_entry(lk, win_classic)) for lk in classic_devices]
 
-    needs_write = _needs_any_write(ble_pairs, classic_pairs)
-    if not args.dry_run and needs_write:
+    needs_hive_write = _needs_classic_write(classic_pairs)
+    if not args.dry_run and needs_hive_write:
         backup_path = _backup_hive(hive_path)
         print(f"  Backup: {backup_path}")
         print(f"  (Restore with: sudo cp '{backup_path}' '{hive_path}')")
 
     changed = 0
 
+    bluez_dir = Path(args.bluez_dir)
+    ble_changed = False
     for lk, we in ble_pairs:
         print(f"\n  [BLE] {lk.device_name} ({lk.device_mac})")
         if args.verbose:
-            status = "found in Windows" if we else "NOT in Windows — will create"
+            status = "found in Windows" if we else "NOT in Windows"
             print(f"    Windows entry: {status}")
-        if _sync_ble(lk, we, adapter_win_key, hive_path, args.dry_run, args.verbose):
+        if _sync_ble(lk, we, bluez_dir, args.dry_run, args.verbose):
             changed += 1
+            ble_changed = True
 
     for lk, we in classic_pairs:
         print(f"\n  [Classic] {lk.device_name} ({lk.device_mac})")
@@ -439,8 +394,9 @@ def main() -> None:
         print(f"DRY RUN complete. {changed} device(s) would be updated.")
     else:
         print(f"Done. {changed} device(s) updated.")
-        if changed:
-            print("Boot into Windows — your Bluetooth devices should connect automatically.")
+        if ble_changed:
+            print("Run: sudo systemctl restart bluetooth")
+            print("Then verify your BLE devices reconnect in Linux.")
 
 
 if __name__ == "__main__":

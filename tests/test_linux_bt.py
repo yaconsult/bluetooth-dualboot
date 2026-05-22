@@ -9,6 +9,7 @@ from bluetooth_dualboot.linux_bt import (
     ClassicKeys,
     discover_all_devices,
     discover_ble_devices,
+    patch_ble_info_file,
     read_ble_keys,
     read_classic_keys,
 )
@@ -151,3 +152,70 @@ def test_discover_all_devices(tmp_path):
 def test_discover_all_devices_missing_dir():
     with pytest.raises(FileNotFoundError):
         discover_all_devices(Path("/nonexistent/path"))
+
+
+def test_patch_ble_info_file_updates_keys(tmp_path):
+    """patch_ble_info_file should overwrite LTK, IRK, CSRK and LTK params."""
+    info = _write_info(tmp_path, BLE_INFO)
+    patch_ble_info_file(
+        info_path=info,
+        ltk="AABBCCDDEEFF00112233445566778899",
+        ltk_rand=9999,
+        ltk_ediv=1234,
+        irk="11223344556677889900AABBCCDDEEFF",
+        csrk_local="LOCALCSRK0000000000000000000000AA",
+        csrk_remote="REMOTCSRK0000000000000000000000BB",
+    )
+    keys = read_ble_keys(info, "C0:35:32:AC:13:4A", "E4:9F:64:0B:E8:1C")
+    assert keys is not None
+    assert keys.ltk == "AABBCCDDEEFF00112233445566778899"
+    assert keys.ltk_ediv == 1234
+    assert keys.ltk_rand == 9999
+    assert keys.irk == "11223344556677889900AABBCCDDEEFF"
+    assert keys.csrk_local == "LOCALCSRK0000000000000000000000AA"
+    assert keys.csrk_remote == "REMOTCSRK0000000000000000000000BB"
+
+
+def test_patch_ble_info_file_preserves_general(tmp_path):
+    """patch_ble_info_file should preserve [General] and other metadata."""
+    info = _write_info(tmp_path, BLE_INFO)
+    patch_ble_info_file(
+        info_path=info,
+        ltk="AABBCCDDEEFF00112233445566778899",
+        ltk_rand=9999,
+        ltk_ediv=1234,
+        irk="11223344556677889900AABBCCDDEEFF",
+    )
+    keys = read_ble_keys(info, "C0:35:32:AC:13:4A", "E4:9F:64:0B:E8:1C")
+    assert keys is not None
+    assert keys.device_name == "BT5.0 Mouse"
+    assert keys.address_type == "static"
+
+
+def test_patch_ble_info_file_creates_missing_sections(tmp_path):
+    """patch_ble_info_file creates sections that don't exist yet."""
+    # Minimal BLE info with no key sections
+    minimal_info = """\
+[General]
+Name=Test Device
+AddressType=static
+SupportedTechnologies=LE;
+Trusted=true
+Blocked=false
+"""
+    info = _write_info(tmp_path, minimal_info)
+    patch_ble_info_file(
+        info_path=info,
+        ltk="AABBCCDDEEFF00112233445566778899",
+        ltk_rand=9999,
+        ltk_ediv=1234,
+        irk="11223344556677889900AABBCCDDEEFF",
+        csrk_local="LOCALCSRK0000000000000000000000AA",
+        csrk_remote="REMOTCSRK0000000000000000000000BB",
+    )
+    keys = read_ble_keys(info, "AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66")
+    assert keys is not None
+    assert keys.ltk == "AABBCCDDEEFF00112233445566778899"
+    assert keys.irk == "11223344556677889900AABBCCDDEEFF"
+    assert keys.csrk_local == "LOCALCSRK0000000000000000000000AA"
+    assert keys.csrk_remote == "REMOTCSRK0000000000000000000000BB"
