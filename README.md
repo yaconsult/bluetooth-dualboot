@@ -17,6 +17,25 @@ Supports **BLE (Bluetooth Low Energy)** and **Classic BR/EDR** devices.
 
 ---
 
+## Terminology
+
+| Term | Meaning |
+|------|---------|
+| **BLE** (Bluetooth Low Energy) | A low-power protocol introduced in the Bluetooth 4.0 specification.  Used by most modern mice, keyboards, and fitness trackers.  Also called "Bluetooth Smart". |
+| **Classic BR/EDR** | The original Bluetooth protocol (Basic Rate / Enhanced Data Rate).  Used by audio devices, older mice/keyboards, and file transfer. |
+| **BT5.0 / BT3.0** | Bluetooth specification version numbers.  The TeckNet EWM01308 mouse uses these as **device names** ("BT5.0 Mouse" and "BT3.0 Mouse") to indicate which interface/mode it is advertising — "BT5.0 Mouse" means BLE mode, "BT3.0 Mouse" means Classic mode. |
+| **Dual-protocol device** | A device that supports both BLE and Classic on the same hardware, presenting as two separate Bluetooth devices with different names and MAC addresses. |
+| **LTK** (Long Term Key) | The encryption key used by BLE connections. |
+| **Link Key** | The encryption key used by Classic BR/EDR connections. |
+| **IRK** (Identity Resolving Key) | A BLE key that lets the host identify a device even when it uses a randomised MAC address. |
+
+> **Important:** The "BT5.0" / "BT3.0" in the device name indicates which
+> **protocol mode** (BLE vs Classic) the mouse is advertising — it does *not*
+> mean you need a BT5.0 or BT3.0 adapter.  Any modern Bluetooth adapter
+> supporting BLE will work.
+
+---
+
 ## The Problem
 
 On a dual-boot computer, Linux and Windows share the same Bluetooth adapter but
