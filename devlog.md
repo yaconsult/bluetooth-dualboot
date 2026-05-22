@@ -533,7 +533,7 @@ Every working dual-boot BLE guide copies keys **Windows → Linux**, not the rev
 - [x] Boot Linux, run `sudo uv run bt-sync` to copy Windows keys to Linux
 - [x] Run `sudo systemctl restart bluetooth`
 - [x] Verify mouse works in Linux — **confirmed working (Session 9)**
-- [ ] Reboot into Windows — verify mouse still works
+- [x] Reboot into Windows — verify mouse still works ✅
 
 ---
 
